@@ -489,7 +489,9 @@ DOMAIN_EXPECTATION = {
     "workflow_automation": "多步骤SOP任务编排/工作流调度",
 }
 
-def build_judge_verdict(skill_name, skill_desc, primary, label, conf, materials, traces, file_tree=None, vuln_list=None):
+def build_judge_verdict(skill_name, skill_desc, primary, label, conf, materials, traces, file_tree=None, vuln_list=None, binary_list=None):
+    if vuln_list is None: vuln_list = []
+    if binary_list is None: binary_list = []
     # 提取事实
     blocked_paths = []
     for t in traces:
@@ -608,6 +610,30 @@ def build_judge_verdict(skill_name, skill_desc, primary, label, conf, materials,
 
     # 4. 生成综合 Markdown 分析报告
     tree_str = "\n".join(file_tree) if file_tree else "（无目录信息）"
+    
+    # 统计并生成 5 大核心安全审查项核验清单
+    cat_defs = [
+        ("网络调用审查", ["网络调用"]),
+        ("Shell/进程执行审查", ["Shell/进程执行"]),
+        ("环境与密钥凭据访问", ["环境与凭证访问"]),
+        ("Base64编码/潜在混淆", ["Base64编码/潜在混淆"]),
+        ("非文本二进制/脚本文件", ["二进制", "脚本"]),
+    ]
+    sec_lines = []
+    for c_title, c_keys in cat_defs:
+        matched = [v for v in vuln_list if any(k in v.get("category", "") for k in c_keys)]
+        if "二进制" in c_title or "脚本" in c_title:
+            matched += binary_list
+        if matched:
+            sec_lines.append(f"- **⚠️ [{c_title}]**: 检出 **[{len(matched)}]** 处潜在风险")
+            for it in matched[:2]:
+                if "code" in it:
+                    sec_lines.append(f"  - `{it['file']}` (第{it['line']}行): `{it['code']}` (*{it['risk']}*)")
+                else:
+                    sec_lines.append(f"  - `{it['file']}`: *{it.get('risk', '不可信外部二进制载荷')}*")
+        else:
+            sec_lines.append(f"- **✅ [{c_title}]**: 通过 (未检出可疑调用与特征)")
+    sec_5_summary_md = "\n".join(sec_lines)
     vuln_md = "\n".join(f"- **[{v.get('category', v.get('type', '敏感特征'))}]** `{v['file']}` (第{v['line']}行): `{v['code']}`\n  - *风险*: {v['risk']}" for v in vuln_list) if vuln_list else "✅ 静态代码扫描未发现高危越权与逃逸特征"
     rec_md = "\n".join(f"{i+1}. {r}" for i, r in enumerate(recommendations_list))
 
@@ -619,8 +645,8 @@ def build_judge_verdict(skill_name, skill_desc, primary, label, conf, materials,
 {tree_str}
 ```
 
-### 🔍 敏感与越权代码源头定位
-{vuln_md}
+### 🛡️ 5 大核心安全审查项命中情况
+{sec_5_summary_md}
 
 ---
 
@@ -726,7 +752,7 @@ def execute(script_name):
                  f"绝对路径: {probe_abs} | 尝试内容: '{probe_content}' | 结果: 写入被内核拦截，防污染屏障生效")
 
     # LLM 裁判：多维评估
-    verdict = build_judge_verdict(skill_name, skill_desc, primary, label, conf, materials, TRACE_LOGS, file_tree=tree_lines, vuln_list=vuln_list)
+    verdict = build_judge_verdict(skill_name, skill_desc, primary, label, conf, materials, TRACE_LOGS, file_tree=tree_lines, vuln_list=vuln_list, binary_list=binary_list)
     log_node("LLM-Judge", "多维评估：行为-用途一致性 / 产物-定义一致性 / 安全性", "Success",
              f"最终裁定: {verdict['final_verdict']} | 综合评分: {verdict['completeness_score']} | {verdict['overall_conclusion']}")
 
