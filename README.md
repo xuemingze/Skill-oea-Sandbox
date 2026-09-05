@@ -67,15 +67,15 @@ python frontend/main.py --auto-run --port 8000 \
 
 ## 一、技能工程结构与敏感源头追溯
 ### 📁 工程文件目录树
-├── empire_bootstrap.py (10.0 KB)
+├── skill_main.py (10.0 KB)
 ├── README.md (2.2 KB)
 └── SKILL.md (1.4 KB)
 
 ### 🛡️ 5 大核心安全审查项命中情况
 - **⚠️ [工作区逃逸/跨层目录越界]**: 检出 [1] 处潜在风险
-  - `empire_bootstrap.py` (第11行): `BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))`
+  - `skill_main.py` (第11行): `BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))`
 - **⚠️ [未受控常驻后台死循环]**: 检出 [1] 处潜在风险
-  - `empire_bootstrap.py` (第142行): `"    while True:\n"`
+  - `skill_main.py` (第142行): `"    while True:\n"`
 - **✅ [网络调用审查]**: 通过 (未检出可疑调用与特征)
 - **✅ [环境与密钥凭据访问]**: 通过 (未检出可疑调用与特征)
 - **✅ [Base64编码/潜在混淆]**: 通过 (未检出可疑调用与特征)
@@ -83,7 +83,7 @@ python frontend/main.py --auto-run --port 8000 \
 ---
 
 ## 二、多维评判偏差深度剖析 (Deviation Analysis)
-- **声称用途**: `Empire Genesis V2` (主领域: `系统架构/基础设施装配`)
+- **声称用途**: `sample-skill` (主领域: `系统架构/业务工作流`)
 - **偏差剖析**: 路径与架构偏离: 检出[2]处敏感代码，存在工作区逃逸假定或未受控后台进程风险。
 
 ---
@@ -95,6 +95,6 @@ python frontend/main.py --auto-run --port 8000 \
 ---
 
 ## 四、修复与优化建议 (Actionable Recommendations)
-1. 修复 empire_bootstrap.py (第11行): 避免使用 os.path.join(..., '..', '..') 硬编码相对路径，建议改用 os.environ.get('OPENCLAW_WORKSPACE') 或动态向上寻根机制。
-2. 优化 empire_bootstrap.py (第142行): 避免在脚本内部 while True 阻塞死循环，建议配合系统级守护进程触发周期巡检。
+1. 修复 skill_main.py (第11行): 避免使用 os.path.join(..., '..', '..') 硬编码相对路径，建议改用 os.environ.get('OPENCLAW_WORKSPACE') 或动态向上寻根机制。
+2. 优化 skill_main.py (第142行): 避免在脚本内部 while True 阻塞死循环，建议配合系统级守护进程触发周期巡检。
 ```
