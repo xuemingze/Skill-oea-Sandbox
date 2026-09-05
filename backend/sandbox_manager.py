@@ -10,7 +10,7 @@ from typing import Dict, Any, Generator, Tuple, Optional, List
 
 logger = logging.getLogger(__name__)
 
-SKILL_RUNNER_CODE = r"""# -*- coding: utf-8 -*-
+SKILL_RUNNER_CODE = r"""## -*- coding: utf-8 -*-
 import os
 import sys
 import json
@@ -396,7 +396,66 @@ def run_general_flow(materials=None):
 
 
 # ============ 4. LLM-as-Judge 多维评估（核心改进） ============
-def build_judge_verdict(skill_name, skill_desc, primary, label, conf, materials, traces):
+
+def scan_skill_structure_and_vulnerabilities(skill_root="."):
+    file_tree = []
+    vulnerabilities = []
+    ignore_files = {"skill_runner.py", "user_input.json", "target.txt", "review_report.json", "diff_report.json", "workflow_report.json"}
+    ignore_dirs = {"test_materials", "__pycache__", ".git", ".cowork-temp"}
+    
+    for root, dirs, files in os.walk(skill_root):
+        dirs[:] = [d for d in dirs if d not in ignore_dirs]
+        rel_root = os.path.relpath(root, skill_root)
+        depth = 0 if rel_root == "." else rel_root.count(os.sep) + 1
+        indent = "  " * depth
+        if rel_root != ".":
+            file_tree.append(f"{indent}📁 {os.path.basename(root)}/")
+        for f in files:
+            if f in ignore_files:
+                continue
+            f_path = os.path.join(root, f)
+            try:
+                sz = os.path.getsize(f_path)
+                sz_str = f"{sz/1024:.1f} KB" if sz >= 1024 else f"{sz} B"
+            except Exception:
+                sz_str = "未知"
+            file_tree.append(f"{indent}├── {f} ({sz_str})")
+            if f.endswith(('.py', '.sh', '.bat', '.js')):
+                try:
+                    with original_open(f_path, 'r', encoding='utf-8', errors='ignore') as src_fp:
+                        lines = src_fp.readlines()
+                    for idx, line in enumerate(lines, 1):
+                        stripped = line.strip()
+                        if (".." in stripped and ("os.path.join" in stripped or "../" in stripped or "..\\" in stripped)):
+                            vulnerabilities.append({
+                                "file": f,
+                                "line": idx,
+                                "type": "工作区逃逸/跨层目录越界",
+                                "code": stripped,
+                                "risk": "试图跳出自身技能目录访问宿主工作区，破坏沙箱文件隔离边界"
+                            })
+                        elif re.search(r"while\s+True\s*:", stripped) and any("sleep" in l for l in lines[max(0, idx-2):min(len(lines), idx+15)]):
+                            vulnerabilities.append({
+                                "file": f,
+                                "line": idx,
+                                "type": "未受控常驻后台死循环",
+                                "code": stripped,
+                                "risk": "无退出条件的长周期后台循环，易产生孤儿进程与系统资源长期占用"
+                            })
+                        elif any(f"{drive}:\\" in stripped for drive in "CDEFGHIJKLMNOPQRSTUVWXYZ") and "test_materials" not in stripped:
+                            vulnerabilities.append({
+                                "file": f,
+                                "line": idx,
+                                "type": "硬编码宿主绝对路径",
+                                "code": stripped,
+                                "risk": "强绑定特定环境绝对路径，移植性差且可能越界读取敏感宿主文件"
+                            })
+                except Exception:
+                    pass
+    return file_tree, vulnerabilities
+
+
+def build_judge_verdict(skill_name, skill_desc, primary, label, conf, materials, traces, file_tree=None, vuln_list=None):
     # 提取事实
     blocked_paths = []
     for t in traces:
@@ -462,8 +521,92 @@ def build_judge_verdict(skill_name, skill_desc, primary, label, conf, materials,
         + (f"越权拦截路径：{' ; '.join(blocked_paths)}。" if blocked_paths else "无越权写入。")
     )
 
+    if file_tree is None:
+        file_tree = []
+    if vuln_list is None:
+        vuln_list = []
+
+    # 1. 偏差剖析 (Deviation Analysis)
+    dev_reasons = []
+    if not behavior_matched:
+        dev_reasons.append(f"行为偏离: 未检出符合主领域『{label}』的核心预期操作特征。")
+    if vuln_list:
+        dev_reasons.append(f"路径与架构偏离: 检出[{len(vuln_list)}]处敏感代码，存在工作区逃逸假定或未受控后台进程风险。")
+    if not dev_reasons:
+        dev_reasons.append("行为规范: 实际执行动作与主领域规约完全吻合，未发生非预期行为偏离。")
+    deviation_analysis_text = " \n".join(dev_reasons)
+
+    # 2. 可用性判定 (Usability Verdict)
+    if not behavior_matched:
+        usability_level = "不可用 (Blocked)"
+        usability_desc = "核心能力未对齐，无法有效完成预期的任务要求。"
+    elif vuln_list:
+        usability_level = "有条件可用 (Conditional Pass)"
+        usability_desc = "核心业务逻辑正常有效，但在非标准层级目录运行或受限权限环境中可能因路径越权假定发生异常，需完成路径适配。"
+    else:
+        usability_level = "完全可用 (Pass)"
+        usability_desc = "核心功能健壮完备，隔离环境全流程执行无阻碍。"
+
+    # 3. 修复与优化方案 (Actionable Recommendations)
+    recs = []
+    if vuln_list:
+        for v in vuln_list:
+            if v["type"] == "工作区逃逸/跨层目录越界":
+                recs.append(f"修复 {v['file']} (第{v['line']}行): 避免使用 os.path.join(..., '..', '..') 硬编码相对路径，建议改用 os.environ.get('OPENCLAW_WORKSPACE') 或动态向上寻根机制。")
+            elif v["type"] == "未受控常驻后台死循环":
+                recs.append(f"优化 {v['file']} (第{v['line']}行): 避免在脚本内部 while True 阻塞死循环，建议配合系统级守护进程 (如 Cron / Task Scheduler) 触发周期巡检。")
+            elif v["type"] == "硬编码宿主绝对路径":
+                recs.append(f"优化 {v['file']} (第{v['line']}行): 将硬编码的绝对路径替换为基于当前工作区可配置的相对路径或参数注入。")
+    if not recs:
+        recs.append("规范建议: 保持当前工程解耦规范，建议补充原子部署与失败自动回滚机制。")
+    recommendations_list = recs
+
+    # 4. 生成综合 Markdown 分析报告
+    tree_str = "\n".join(file_tree) if file_tree else "（无目录信息）"
+    vuln_md = "\n".join(f"- **[{v['type']}]** `{v['file']}` (第{v['line']}行): `{v['code']}`\n  - *风险*: {v['risk']}" for v in vuln_list) if vuln_list else "✅ 静态代码扫描未发现高危越权与逃逸特征"
+    rec_md = "\n".join(f"{i+1}. {r}" for i, r in enumerate(recommendations_list))
+
+    detailed_report_md = f'''# 🛡️ AI 技能全真沙箱测试与多维评估分析报告
+
+## 一、技能工程结构与敏感源头追溯
+### 📁 工程文件目录树
+```text
+{tree_str}
+```
+
+### 🔍 敏感与越权代码源头定位
+{vuln_md}
+
+---
+
+## 二、多维评判偏差深度剖析 (Deviation Analysis)
+- **声称用途**: `{skill_name}` (主领域: `{label}`)
+- **偏差剖析**:
+{deviation_analysis_text}
+
+---
+
+## 三、可用性判定 (Usability Verdict)
+- **判定结论**: **{usability_level}**
+- **任务能力评估**: {usability_desc}
+
+---
+
+## 四、修复与优化建议 (Actionable Recommendations)
+{rec_md}
+'''
+
     return {
         "judge_model": "deepseek-v4-pro-judge",
+        "file_tree": file_tree,
+        "vulnerabilities_detected": vuln_list,
+        "deviation_analysis": deviation_analysis_text,
+        "usability_verdict": {
+            "level": usability_level,
+            "description": usability_desc
+        },
+        "actionable_recommendations": recommendations_list,
+        "detailed_report_md": detailed_report_md,
         "evaluated_at": datetime.now().isoformat(),
         "dimensions": {
             "purpose_behavior_alignment": dim1,
@@ -481,6 +624,17 @@ def build_judge_verdict(skill_name, skill_desc, primary, label, conf, materials,
 
 # ============ 主流程 ============
 def execute(script_name):
+    
+    # 提取工程目录树与源码敏感特征
+    tree_lines, vuln_list = scan_skill_structure_and_vulnerabilities(".")
+    tree_summary = "\n".join(tree_lines) if tree_lines else "根目录下无额外文件"
+    log_node("Node-Tree", "提取被测技能工程结构", "Success", f"目录树清单:\n{tree_summary}")
+    if vuln_list:
+        vuln_desc = " ; ".join(f"[{v['type']}] {v['file']}:第{v['line']}行" for v in vuln_list)
+        log_node("Node-Vulnerability-Trace", "扫描被测技能源码敏感与越权特征", "Warning", f"发现[{len(vuln_list)}]处敏感源头: {vuln_desc}")
+    else:
+        log_node("Node-Vulnerability-Trace", "扫描被测技能源码敏感与越权特征", "Success", "静态扫描未检出跨层逃逸与死循环高危特征")
+
     log_node("Node-Init", "沙箱启动与多节点自动化测试引擎介入", "Success", "成功构建追踪底座与隔离夹点")
 
     if not os.path.exists(script_name):
@@ -527,7 +681,7 @@ def execute(script_name):
                  f"绝对路径: {probe_abs} | 尝试内容: '{probe_content}' | 结果: 写入被内核拦截，防污染屏障生效")
 
     # LLM 裁判：多维评估
-    verdict = build_judge_verdict(skill_name, skill_desc, primary, label, conf, materials, TRACE_LOGS)
+    verdict = build_judge_verdict(skill_name, skill_desc, primary, label, conf, materials, TRACE_LOGS, file_tree=tree_lines, vuln_list=vuln_list)
     log_node("LLM-Judge", "多维评估：行为-用途一致性 / 产物-定义一致性 / 安全性", "Success",
              f"最终裁定: {verdict['final_verdict']} | 综合评分: {verdict['completeness_score']} | {verdict['overall_conclusion']}")
 
