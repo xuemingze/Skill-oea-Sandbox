@@ -1,19 +1,16 @@
+import sys
 import os
 import shutil
 import uuid
+import json
 import logging
 import subprocess
-import threading
-import queue
-import sys
-import json
-from datetime import datetime
+import time
+from typing import Dict, Any, Generator, Tuple, Optional, List
 
 logger = logging.getLogger(__name__)
 
-# 真实的靶向测试脚本注入代码（带有挂载点认知、系统钩子和流程串联）
-SKILL_RUNNER_CODE = r"""
-# -*- coding: utf-8 -*-
+SKILL_RUNNER_CODE = r"""# -*- coding: utf-8 -*-
 import os
 import sys
 import json
@@ -22,6 +19,13 @@ import builtins
 import re
 from datetime import datetime
 
+# 强制 UTF-8 编码重定向，防止 Windows 下控制台默认 GBK 导致乱码
+if hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
 TRACE_LOGS = []
 
 def log_node(node, action, status, details):
@@ -124,6 +128,19 @@ def build_scenario(primary, meta, script_name):
     material_dir = "test_materials"
     os.makedirs(material_dir, exist_ok=True)
     materials = []
+    
+    # 检查是否存在用户交互输入的材料与自定义 prompt
+    user_input_path = "user_input.json"
+    user_prompt = None
+    user_materials_info = []
+    if os.path.exists(user_input_path):
+        try:
+            with original_open(user_input_path, 'r', encoding='utf-8') as uf:
+                u_cfg = json.load(uf)
+                user_prompt = u_cfg.get("user_prompt")
+                user_materials_info = u_cfg.get("custom_materials", [])
+        except Exception:
+            pass
 
     if primary == "code_development":
         prompt = "模拟编程专家实操：审查下面这段代码，找出Bug并给出严重度和修复建议。"
@@ -187,9 +204,30 @@ def build_scenario(primary, meta, script_name):
             f.write(info)
         materials.append((info_path, "通用物料：任务说明", info.strip()))
 
+    # 注入用户上传的文件与图片物料
+    for item in user_materials_info:
+        rel_p = item.get("rel_path")
+        m_name = item.get("name", os.path.basename(rel_p) if rel_p else "material.dat")
+        m_type = item.get("type", "file")
+        if rel_p and os.path.exists(rel_p):
+            try:
+                with original_open(rel_p, 'r', encoding='utf-8', errors='ignore') as mf:
+                    f_content = mf.read()
+            except Exception:
+                f_content = f"[{m_type.upper()}_FILE: {m_name}]"
+            materials.append((rel_p, f"用户交互物料({m_type}): {m_name}", f_content))
+
+    if user_prompt and user_prompt.strip():
+        prompt = user_prompt.strip()
+
     detail_parts = [f"{os.path.basename(p)}={purpose}" for p, purpose, _ in materials]
-    log_node("Auto-Material-Prep", "按主领域动态生成专属测试物料", "Success",
-             f"主领域: {primary} | 生成物料[{len(materials)}]个 | " + " ; ".join(detail_parts) + f" | 测试话术: '{prompt}'")
+    log_node("Auto-Material-Prep", "按主领域动态生成专属测试物料与装载交互材料", "Success",
+             f"主领域: {primary} | 装载物料[{len(materials)}]个 (含用户自定义[{len(user_materials_info)}]) | " + " ; ".join(detail_parts) + f" | 执行话术: '{prompt}'")
+    
+    if user_prompt or user_materials_info:
+        log_node("User-Material-Inject", "注入用户交互式测试材料与定制话术", "Success",
+                 f"用户话术: '{prompt}' | 自定义物料清单: {', '.join(item.get('name', '未命名') for item in user_materials_info) if user_materials_info else '（未上传文件，使用默认/自适应测试物料）'}")
+
     return prompt, materials
 
 
@@ -480,10 +518,10 @@ class SandboxLifecycleManager:
             
         self.active_sandboxes = {}
 
-    def create_and_start(self, skill_dir: str, memory_snapshot_dir: str = None) -> str:
+    def create_and_start(self, skill_dir: str, memory_snapshot_dir: str = None, user_prompt: str = None, custom_materials: List[Dict[str, Any]] = None) -> str:
         """
         创建一个执行沙箱影子目录。
-        采用轻量级复制机制将技能文件和模拟记忆拉入局部可写层（影子文件夹），
+        采用轻量级复制机制将技能文件、模拟记忆以及用户指定的交互材料拉入局部可写层（影子文件夹），
         从而隔离对主机原始项目的任何影响。
         """
         sandbox_id = f"sandbox-{uuid.uuid4().hex[:8]}"
@@ -493,179 +531,213 @@ class SandboxLifecycleManager:
         
         sandbox_skill_dir = os.path.join(sandbox_path, "skill")
         if os.path.exists(skill_dir):
-            shutil.copytree(skill_dir, sandbox_skill_dir, dirs_exist_ok=True)
+            shutil.copytree(skill_dir, sandbox_skill_dir)
         else:
             os.makedirs(sandbox_skill_dir, exist_ok=True)
-            
+            skill_target = os.path.join(sandbox_skill_dir, "SKILL.md")
+            with open(skill_target, "w", encoding="utf-8") as f:
+                f.write(f"# Mock Skill Auto-Generated for {skill_dir}\n")
+
+        # 写入执行拦截器
+        runner_path = os.path.join(sandbox_skill_dir, "skill_runner.py")
+        with open(runner_path, "w", encoding="utf-8") as f:
+            f.write(SKILL_RUNNER_CODE)
+
+        # 挂载或注入用户自定义交互材料（话术/文件/图片）
+        target_mat_dir = os.path.join(sandbox_skill_dir, "test_materials")
+        os.makedirs(target_mat_dir, exist_ok=True)
+        
+        user_input_data = {
+            "user_prompt": user_prompt.strip() if user_prompt else None,
+            "custom_materials": []
+        }
+        
+        if custom_materials:
+            for mat in custom_materials:
+                src_path = mat.get("source_path")
+                mat_name = mat.get("name") or (os.path.basename(src_path) if src_path else f"custom_{uuid.uuid4().hex[:4]}.dat")
+                mat_type = mat.get("type", "file")
+                dst_path = os.path.join(target_mat_dir, mat_name)
+                
+                if src_path and os.path.exists(src_path):
+                    try:
+                        if os.path.isfile(src_path):
+                            shutil.copy2(src_path, dst_path)
+                    except Exception as e:
+                        logger.warning(f"复制用户材料失败 {src_path} -> {dst_path}: {e}")
+                elif mat.get("content"):
+                    try:
+                        with open(dst_path, "w", encoding="utf-8") as fp:
+                            fp.write(mat["content"])
+                    except Exception as e:
+                        logger.warning(f"写入用户材料内容失败: {e}")
+                
+                user_input_data["custom_materials"].append({
+                    "name": mat_name,
+                    "type": mat_type,
+                    "rel_path": os.path.join("test_materials", mat_name)
+                })
+                
+        user_input_file = os.path.join(sandbox_skill_dir, "user_input.json")
+        with open(user_input_file, "w", encoding="utf-8") as fp:
+            json.dump(user_input_data, fp, ensure_ascii=False, indent=2)
+
+        # 如果传入了初始记忆快照，拷贝到沙箱记忆区
         sandbox_memory_dir = os.path.join(sandbox_path, "memory")
         if memory_snapshot_dir and os.path.exists(memory_snapshot_dir):
-            shutil.copytree(memory_snapshot_dir, sandbox_memory_dir, dirs_exist_ok=True)
+            shutil.copytree(memory_snapshot_dir, sandbox_memory_dir)
         else:
             os.makedirs(sandbox_memory_dir, exist_ok=True)
             
+        initial_state = self._capture_dir_state(sandbox_path)
+        
         self.active_sandboxes[sandbox_id] = {
-            "sandbox_id": sandbox_id,
             "path": sandbox_path,
             "skill_dir": sandbox_skill_dir,
             "memory_dir": sandbox_memory_dir,
-            "original_memory_dir": memory_snapshot_dir,
-            "process": None,
-            "script_name": None
+            "initial_state": initial_state,
+            "status": "ready",
+            "created_at": time.time(),
+            "user_prompt": user_prompt,
+            "custom_materials": custom_materials or []
         }
         
-        logger.info(f"轻量影子沙箱 {sandbox_id} 构建成功，路径: {sandbox_path}")
+        logger.info(f"沙箱 {sandbox_id} 已成功构建并就绪，路径: {sandbox_path}")
         return sandbox_id
 
-    def execute_skill(self, sandbox_id: str, script_name: str):
-        """
-        在沙箱容器中执行指定的靶向脚本
-        """
+    def execute_skill(self, sandbox_id: str, script_name: str = "main.py") -> Any:
+        """执行沙箱中的 Skill Runner 并流式捕获其输出"""
         if sandbox_id not in self.active_sandboxes:
-            raise ValueError(f"无效的 sandbox_id: {sandbox_id}")
+            raise ValueError(f"未找到沙箱实例或已被销毁: {sandbox_id}")
             
-        sandbox_info = self.active_sandboxes[sandbox_id]
-        sandbox_info["script_name"] = script_name
-        work_dir = sandbox_info["skill_dir"]
+        sb = self.active_sandboxes[sandbox_id]
+        skill_dir = sb["skill_dir"]
         
-        if script_name.endswith('.md'):
-            # 这里注入核心动态靶向测试脚本（模拟 Agent 流程）并替换掉单纯的 python 脚本
-            runner_path = os.path.join(work_dir, "skill_runner.py")
-            with open(runner_path, 'w', encoding='utf-8') as f:
-                f.write(SKILL_RUNNER_CODE.strip())
-            script_args = [sys.executable, "-u", "skill_runner.py", script_name]
-        else:
-            script_path = os.path.join(work_dir, script_name)
-            if not os.path.exists(script_path):
-                with open(script_path, 'w', encoding='utf-8') as f:
-                    f.write("print('警告: 找不到目标脚本程序。自动生成了空脚本。')\n")
-            script_args = [sys.executable, "-u", script_name]
-            
+        # 查找实际的 skill 文件
+        real_script = "skill.md"
+        for candidate in [script_name, "SKILL.md", "skill.md", "main.py"]:
+            if os.path.exists(os.path.join(skill_dir, candidate)):
+                real_script = candidate
+                break
+
+        cmd = [sys.executable, "-X", "utf8", "skill_runner.py", real_script]
+        logger.info(f"启动沙箱子进程: {cmd} 在目录 {skill_dir}")
+        
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
         process = subprocess.Popen(
-            script_args, # -u 强制无缓冲输出
-            cwd=work_dir,
+            cmd,
+            cwd=skill_dir,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            bufsize=0
+            text=True,
+            bufsize=1,
+            encoding="utf-8",
+            errors="replace",
+            env=env
         )
-        sandbox_info["process"] = process
-
-        class ExecInstance:
-            def __init__(self, proc):
-                self.proc = proc
-                
-            @property
-            def output(self):
-                """通过多线程及队列将 stdout 和 stderr 合并为兼容生成器模型"""
-                q = queue.Queue()
-                
-                def read_stream(stream, is_stderr):
-                    try:
-                        for line in iter(stream.readline, b''):
-                            if line:
-                                # 兼容 windows 不同的系统编码或正常纯 utf8 缓冲流
-                                try:
-                                    decoded = line.decode('utf-8')
-                                except UnicodeDecodeError:
-                                    decoded = line.decode('gbk', errors='replace')
-                                    
-                                if is_stderr:
-                                    q.put((None, decoded))
-                                else:
-                                    q.put((decoded, None))
-                    finally:
-                        stream.close()
-                    
-                t_out = threading.Thread(target=read_stream, args=(self.proc.stdout, False))
-                t_err = threading.Thread(target=read_stream, args=(self.proc.stderr, True))
-                t_out.daemon = True
-                t_err.daemon = True
-                t_out.start()
-                t_err.start()
-                
-                while t_out.is_alive() or t_err.is_alive() or not q.empty():
-                    try:
-                        item = q.get(timeout=0.1)
-                        yield item
-                    except queue.Empty:
-                        continue
-                self.proc.wait()
-                
-        return ExecInstance(process)
-
-    def generate_diff(self, info: dict):
-        """
-        基于结束态与原始记忆快照层做产物差分分析，生成沙箱透视 Diff。
-        """
-        diff_results = {
-            "sandbox_id": info["sandbox_id"],
-            "target": info.get("script_name", "unknown"),
-            "timestamp": datetime.now().isoformat(),
-            "artifacts_added": [],
-            "artifacts_modified": [],
-            "artifacts_persisted": []
-        }
         
-        mem_path = info["memory_dir"]
-        orig_mem_path = info.get("original_memory_dir")
-        
-        if os.path.exists(mem_path):
-            for root, _, files in os.walk(mem_path):
-                for f in files:
-                    full_p = os.path.join(root, f)
-                    rel_path = os.path.relpath(full_p, mem_path)
-                    
-                    # 识别为新增还是修改
-                    is_new = True
-                    if orig_mem_path and os.path.exists(orig_mem_path):
-                        orig_p = os.path.join(orig_mem_path, rel_path)
-                        if os.path.exists(orig_p):
-                            is_new = False
-                            # 可以用时间戳或大小校验修改。做演示简化为始终记录变更。
-                            diff_results["artifacts_modified"].append(f"memory/{rel_path}")
-                    
-                    if is_new:
-                        diff_results["artifacts_added"].append(f"memory/{rel_path}")
-                    
-                    # 持久化拷贝产物文件到宿主机报告目录，避免随沙箱销毁丢失
-                    try:
-                        persisted_name = f"{info['sandbox_id']}_{f}"
-                        shutil.copy2(full_p, os.path.join(self.reports_dir, persisted_name))
-                        diff_results["artifacts_persisted"].append(persisted_name)
-                    except Exception as e:
-                        logger.error(f"持久化产物 {f} 失败: {e}")
-        
-        # 结果存入外部持久化独立区域
-        report_path = os.path.join(self.reports_dir, f"{info['sandbox_id']}_snapshot_diff.json")
-        try:
-            with open(report_path, 'w', encoding='utf-8') as f:
-                json.dump(diff_results, f, ensure_ascii=False, indent=2)
-            logger.info(f"DIFF 分析完成: 高危拦截、快照增量跟踪等快照数据已保留在 {report_path}")
-        except Exception as e:
-            logger.error(f"写入 DIFF 失败: {e}")
+        def output_stream() -> Generator[Tuple[str, str], None, None]:
+            while True:
+                line = process.stdout.readline()
+                err_line = process.stderr.readline()
+                if not line and not err_line and process.poll() is not None:
+                    break
+                yield line, err_line
+                
+            rc = process.poll()
+            if rc != 0:
+                yield "", f"[Process exited with code {rc}]\n"
+                
+        class ExecResult:
+            def __init__(self, gen):
+                self.output = gen
+                
+        return ExecResult(output_stream())
 
-    def destroy(self, sandbox_id: str):
+    def generate_diff(self, sandbox_id: str) -> Dict[str, Any]:
         """
-        快照分析出安全差异后，强制清理影子目录并杀死关联进程。
+        在沙箱销毁前捕获环境变化差异。
+        自动提取产物文件并持久化复制到 sandbox_reports/ 目录。
         """
-        if sandbox_id in self.active_sandboxes:
-            sandbox_info = self.active_sandboxes[sandbox_id]
-            process = sandbox_info.get("process")
-            if process and process.poll() is None:
+        if sandbox_id not in self.active_sandboxes:
+            return {"error": "沙箱不存在"}
+            
+        sb = self.active_sandboxes[sandbox_id]
+        sandbox_path = sb["path"]
+        initial_state = sb["initial_state"]
+        current_state = self._capture_dir_state(sandbox_path)
+        
+        added = list(set(current_state.keys()) - set(initial_state.keys()))
+        removed = list(set(initial_state.keys()) - set(current_state.keys()))
+        modified = [
+            f for f in set(current_state.keys()) & set(initial_state.keys())
+            if current_state[f] != initial_state[f]
+        ]
+        
+        saved_artifacts = []
+        for rel_file in added + modified:
+            if rel_file.endswith(".pyc") or "__pycache__" in rel_file:
+                continue
+            src_file = os.path.join(sandbox_path, rel_file)
+            if os.path.isfile(src_file):
+                safe_name = rel_file.replace(os.sep, "_").replace("/", "_")
+                dst_report_path = os.path.join(self.reports_dir, f"{sandbox_id}_{safe_name}")
                 try:
-                    process.kill()
-                except Exception:
-                    pass
+                    shutil.copy2(src_file, dst_report_path)
+                    saved_artifacts.append(dst_report_path)
+                except Exception as e:
+                    logger.warning(f"无法将产物持久化到报告区: {e}")
+
+        diff = {
+            "artifacts_added": [f for f in added if not f.endswith(".pyc") and "__pycache__" not in f],
+            "artifacts_modified": [f for f in modified if not f.endswith(".pyc") and "__pycache__" not in f],
+            "files_removed": removed,
+            "persisted_artifacts": saved_artifacts
+        }
+        return diff
+
+    def destroy(self, sandbox_id: str) -> Dict[str, Any]:
+        """销毁沙箱环境，自动生成并保存最终的持久化执行报告"""
+        if sandbox_id not in self.active_sandboxes:
+            return {"status": "ignored", "msg": "沙箱已不存在"}
             
-            # --- 构建差异 Artifact，永久脱离沙箱存储 ---
-            self.generate_diff(sandbox_info)
-            
-            sandbox_path = sandbox_info["path"]
-            try:
-                import time
-                time.sleep(0.5) # 给文件句柄释放的时间
-                shutil.rmtree(sandbox_path, ignore_errors=True)
-                logger.info(f"沙箱 {sandbox_id} 及其临时资源已安全销毁，底层无任何原项目污染。")
-            except Exception as e:
-                logger.error(f"清理沙箱 {sandbox_id} 失败: {e}")
-                
+        diff = self.generate_diff(sandbox_id)
+        
+        # 归档该沙箱执行期间生成的 json 报告到永久 reports_dir
+        sb = self.active_sandboxes[sandbox_id]
+        sandbox_path = sb["path"]
+        
+        for root, _, files in os.walk(sandbox_path):
+            for f in files:
+                if f.endswith(".json") and "偏差报告" in f:
+                    src_f = os.path.join(root, f)
+                    dst_f = os.path.join(self.reports_dir, f"{sandbox_id}_{f}")
+                    try:
+                        shutil.copy2(src_f, dst_f)
+                    except Exception as e:
+                        logger.warning(f"持久化执行报告失败: {e}")
+
+        try:
+            shutil.rmtree(sandbox_path, ignore_errors=True)
             del self.active_sandboxes[sandbox_id]
+            logger.info(f"沙箱 {sandbox_id} 影子环境已被物理隔离销毁，报告已归档至 {self.reports_dir}。")
+            return {"status": "success", "diff": diff}
+        except Exception as e:
+            logger.error(f"清理沙箱 {sandbox_id} 失败: {e}")
+            return {"status": "error", "msg": str(e)}
+
+    def _capture_dir_state(self, path: str) -> Dict[str, float]:
+        state = {}
+        if not os.path.exists(path):
+            return state
+        for root, _, files in os.walk(path):
+            for f in files:
+                full = os.path.join(root, f)
+                rel = os.path.relpath(full, path)
+                try:
+                    state[rel] = os.path.getmtime(full)
+                except OSError:
+                    pass
+        return state
