@@ -1,4 +1,4 @@
-# Skill Sandbox (AI 智能体技能安全沙箱与多维评估系统)
+# Skill-oea-Sandbox (AI 智能体技能安全沙箱与多维评估系统)
 > **双平台驱动**：支持作为 **AI Agent 独立调用技能 (Skill 模式)** 与 **PySide6 桌面 GUI 可视化仿真终端** 双模式协同运行。
 > 基于领域感知自动构建测试材料，隔离执行全真工作流，提供包含 **5 大核心安全审查项** 与 **LLM-as-Judge 深度四维评估分析**。
 
@@ -32,7 +32,7 @@
 
 ### 平台一：作为 AI Agent 技能使用 (Skill 模式)
 
-将本仓库放置于智能体技能目录（如 `~/.agents/skills/skill-sandbox` 或 `~/.SKILLs/skill-sandbox`），Agent 会根据 `SKILL.md` 自动加载并调用。
+将本仓库放置于智能体技能目录（如 `~/.agents/skills/skill-oea-sandbox` 或 `~/.SKILLs/skill-oea-sandbox`），Agent 会根据 `SKILL.md` 自动加载并调用。
 
 #### 命令行测试调用：
 ```bash
