@@ -75,6 +75,11 @@ async def stream_sandbox_logs(websocket: WebSocket, container_id: str, script_na
                 await websocket.send_text(f'[STDOUT] {stdout}')
             if stderr:
                 await websocket.send_text(f'[STDERR] {stderr}')
+        try:
+            diff_res = sandbox_manager.generate_diff(container_id)
+            logger.info(f"沙箱 {container_id} 日志流结束，已自动生成并复制持久化报告: {diff_res.get('report_file')}")
+        except Exception as ge:
+            logger.error(f"自动复制报告失败: {ge}")
         await websocket.send_text('\n[系统] Skill 执行完毕。')
     except WebSocketDisconnect:
         logger.info(f'GUI 客户端主动断开了沙箱 {container_id} 的日志流。')

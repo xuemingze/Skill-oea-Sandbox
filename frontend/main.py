@@ -608,7 +608,11 @@ class MainWindow(QMainWindow):
         if not found_report and retry_count < 6:
             QTimer.singleShot(300, lambda: self.fetch_and_display_report(retry_count + 1))
         elif not found_report:
-            self.append_log("WARN", "⚠️ 暂未检索到本次执行生成的持久化评估报告文件（可能沙箱测试仍在执行中或未生成产物）。")
+            if retry_count < 8:
+                # 每 300ms 重试一次，直到后端落盘完成
+                QTimer.singleShot(300, lambda: self.fetch_and_display_report(retry_count + 1))
+            else:
+                self.append_log("WARN", "⚠️ 暂未检索到本次执行生成的持久化评估报告文件（可能沙箱测试仍在执行中或未生成产物）。")
 
     def stop_sandbox_test(self):
         if not self.container_id:
