@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+*.log
+sandbox_backend_err.log
+sandbox_reports/
+.DS_Store
