@@ -844,7 +844,7 @@ class SandboxLifecycleManager:
             cmd,
             cwd=skill_dir,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
             encoding="utf-8",
@@ -853,13 +853,10 @@ class SandboxLifecycleManager:
         )
         
         def output_stream() -> Generator[Tuple[str, str], None, None]:
-            while True:
-                line = process.stdout.readline()
-                err_line = process.stderr.readline()
-                if not line and not err_line and process.poll() is not None:
-                    break
-                yield line, err_line
-                
+            for line in iter(process.stdout.readline, ''):
+                yield line, ""
+            process.stdout.close()
+            process.wait()
             rc = process.poll()
             if rc != 0:
                 yield "", f"[Process exited with code {rc}]\n"
