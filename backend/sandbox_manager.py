@@ -58,20 +58,45 @@ builtins.open = secure_open
 
 
 # ============ 1. 主领域识别 ============
+
+DOMAIN_DEFS = {
+    "system_architecture": ("系统架构/基础设施装配", r"架构|基础设施|装配|StateDB|数据库|部署|哨兵|Watchdog|集群|运维|创世纪|编制", r"架构|statedb|sqlite|数据库|部署|watchdog|哨兵|agent|进程"),
+    "code_development": ("软件开发/编程专家", r"编程|代码|Bug|重构|开发|前端|API|MySQL|测试用例|静态分析", r"def |class |import |function|return |var |const |let "),
+    "ocr_document": ("文档识别/票据OCR", r"OCR|发票|收据|识别|图片转文字|票据|提取文字", r"发票|金额|税额|抬头|统一社会信用代码|开票日期"),
+    "memory_knowledge": ("知识图谱/记忆沉淀", r"记忆|知识库|知识图谱|沉淀|文档库|资料库|笔记|备忘录|记事", r"memory|知识库|graph|node|edge|entity|relation|obsidian|ima"),
+    "file_diff": ("文件差异比对/代码Diff", r"差异|Diff|比对|版本对比|文本比对", r"diff|patch|---|\+\+\+|@@"),
+    "workflow_automation": ("工作流编排/任务调度", r"工作流|任务流|SOP|调度|自动化|编排|pipeline", r"step|action|workflow|task|node|pipeline"),
+}
+
 def extract_frontmatter(content):
     meta = {}
     m = re.match(r"^---\s*\n(.*?)\n---", content, re.DOTALL)
     if m:
-        for line in m.group(1).splitlines():
-            kv = re.match(r"^([\w-]+):\s*(.+)$", line)
+        lines = m.group(1).splitlines()
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            kv = re.match(r"^([\w-]+):\s*(.*)$", line)
             if kv:
-                meta[kv.group(1).strip()] = kv.group(2).strip().strip('"').strip("'")
+                k = kv.group(1).strip()
+                v = kv.group(2).strip().strip('"').strip("'")
+                if v in ("|", ">", "|-", ">-"):
+                    desc_lines = []
+                    i += 1
+                    while i < len(lines) and (lines[i].startswith("  ") or lines[i].strip() == ""):
+                        desc_lines.append(lines[i].strip())
+                        i += 1
+                    meta[k] = " ".join(desc_lines)
+                    continue
+                else:
+                    meta[k] = v
+            i += 1
     if not meta.get("name"):
         title_m = re.search(r"^#\s+(?:Skill:\s*)?([^\n\r]+)", content, re.M)
         if title_m:
             meta["name"] = title_m.group(1).strip()
     if not meta.get("description"):
-        desc_m = re.search(r"##\s+(?:技能描述|描述|Description)[^\n\r]*\n+([^\n#]+)", content, re.IGNORECASE)
+        desc_m = re.search(r"##\s+(?:技能描述|描述|Description)[^\n\r]*\n+([^\n#]+)", content, re.I)
         if desc_m:
             meta["description"] = desc_m.group(1).strip()
         else:
@@ -79,28 +104,6 @@ def extract_frontmatter(content):
             if first_p:
                 meta["description"] = first_p.group(1).strip()
     return meta
-
-
-DOMAIN_DEFS = {
-    "system_architecture": ("系统架构/基础设施装配", r"架构|基础设施|装配|StateDB|数据库|部署|哨兵|Watchdog|集群|运维|创世纪|编制|帝国|bootstrap", r"架构|statedb|sqlite|数据库|部署|watchdog|哨兵|agent|进程|编制|自检"),
-    "code_development": ("软件开发/编程专家", r"编程|代码|Bug|审查|重构|API|测试用例|前端|MySQL|Spec|开发|代码生成|技术选型", r"代码|编程|bug|错误|审查|api|mysql|重构|函数"),
-    "ocr_document": ("单据/文档识别", r"OCR|识别|发票|送货单|抬头|税号|照片|单据", r"ocr|识别|发票|送货单|照片|抬头|税号"),
-    "memory_knowledge": ("记忆/知识管理", r"记忆|持久化|沉淀|知识库|知识点|快照", r"记忆|沉淀|知识点|知识库"),
-    "file_diff": ("文件差异比对", r"比对|差异|核对|一致性", r"比对|差异|diff|版本"),
-    "workflow_automation": ("工作流自动化", r"流程|自动化|批次|SOP|管道|工作流", r"流程|自动化|工作流|管道|sop"),
-}
-
-# 主领域 -> 期望行为特征（用于评判"行为-用途一致性"）
-DOMAIN_EXPECTATION = {
-    "system_architecture": "系统架构装配/StateDB初始化/哨兵巡检部署",
-    "code_development": "代码审查/静态分析/检出代码缺陷",
-    "ocr_document": "OCR文字识别/结构化输出单据信息",
-    "memory_knowledge": "记忆快照对比/沉淀新增知识点",
-    "file_diff": "文件差异比对/输出差异项",
-    "workflow_automation": "流程编排/步骤执行",
-    "general": "通用数据处理",
-}
-
 
 def detect_primary_domain(meta, content):
     desc = meta.get("description", "")
@@ -475,6 +478,16 @@ def scan_skill_structure_and_vulnerabilities(skill_root="."):
                     pass
                     
     return file_tree, findings, binary_files
+
+
+DOMAIN_EXPECTATION = {
+    "system_architecture": "系统架构装配与基础设施初始化",
+    "code_development": "代码审查/静态分析/检出代码缺陷",
+    "ocr_document": "发票/票据/文档OCR内容提取",
+    "memory_knowledge": "记忆快照比对/知识沉淀/图谱提取",
+    "file_diff": "文件版本差异计算/代码Diff比对",
+    "workflow_automation": "多步骤SOP任务编排/工作流调度",
+}
 
 def build_judge_verdict(skill_name, skill_desc, primary, label, conf, materials, traces, file_tree=None, vuln_list=None):
     # 提取事实
