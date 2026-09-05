@@ -409,7 +409,9 @@ class MainWindow(QMainWindow):
             "ERROR": "#F44747",
             "SUCCESS": "#4EC9B0",
             "NODE": "#DCDCAA",
-            "USER": "#C586C0"
+            "USER": "#C586C0",
+            "JUDGE": "#E5C07B",
+            "VERDICT": "#98C379"
         }
         color = color_map.get(level, "#D4D4D4")
         
@@ -530,6 +532,12 @@ class MainWindow(QMainWindow):
                 elif status in ["Failed", "Error"]:
                     level = "ERROR"
 
+                # 针对 LLM 最终裁定节点做专属醒目高亮
+                if node == "LLM-Judge" or "裁定" in action or "评判" in action:
+                    self.append_log("JUDGE", f"⚖️ [{node}] 操作: {action} | 状态: {status}")
+                    self.append_log("VERDICT", f"   📢 【最终裁定内容】: {details}")
+                    return
+
                 formatted = f"► [{node}] 操作: {action} | 状态: {status} | 细节: {details}"
                 self.append_log(level, formatted)
                 return
@@ -546,23 +554,53 @@ class MainWindow(QMainWindow):
             self.append_log("INFO", clean_msg)
 
     def on_ws_closed(self):
-        self.append_log("INFO", "日志流接收完毕，正在拉取多维评判报告...")
+        self.append_log("INFO", "日志流接收完毕，正在拉取多维深度评估报告...")
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
         
-        # 尝试读取报告
+        # 尝试读取报告并全景输出
         reports_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "sandbox_reports")
         if self.container_id and os.path.exists(reports_dir):
             for f in os.listdir(reports_dir):
                 if self.container_id in f and "执行跟踪" in f and f.endswith(".json"):
                     try:
-                        with open(os.path.join(reports_dir, f), "r", encoding="utf-8") as rf:
+                        rep_path = os.path.join(reports_dir, f)
+                        with open(rep_path, "r", encoding="utf-8") as rf:
                             rep = json.load(rf)
                             j = rep.get("ai_judge_analysis", {})
-                            self.append_log("SUCCESS", f"⭐ [LLM-as-Judge 综合裁决]: {j.get('final_verdict', 'Pass')} (完整度得分: {j.get('completeness_score', 90)})")
-                            self.append_log("INFO", f"📋 总体结论: {j.get('overall_conclusion', '')}")
-                    except Exception:
-                        pass
+                            dims = j.get("dimensions", {})
+                            
+                            self.append_log("JUDGE", "============================================================")
+                            self.append_log("JUDGE", "📊 【LLM-as-Judge 最终裁定与多维深度评估汇总】")
+                            self.append_log("VERDICT", f"  🌟 最终裁定: {j.get('final_verdict', 'Pass')} | 综合评分: {j.get('completeness_score', 90)} 分")
+                            self.append_log("INFO", f"  📋 评判结论: {j.get('overall_conclusion', '')}")
+                            
+                            # 输出各维度事实依据
+                            d1 = dims.get("purpose_behavior_alignment", {})
+                            d2 = dims.get("artifact_definition_alignment", {})
+                            d3 = dims.get("security_reasonableness", {})
+                            if d1:
+                                self.append_log("INFO", f"  🎯 行为-用途一致性: [{d1.get('verdict')}] {d1.get('evidence')}")
+                            if d2:
+                                self.append_log("INFO", f"  📦 产物-定义一致性: [{d2.get('verdict')}] {d2.get('evidence')}")
+                            if d3:
+                                self.append_log("WARN" if d3.get('verdict') != '合理' else "INFO", f"  🛡️ 安全性合理性: [{d3.get('verdict')}] {d3.get('evidence')}")
+
+                            # 输出可用性判定与优化建议
+                            u_verdict = j.get("usability_verdict", {})
+                            if u_verdict:
+                                self.append_log("INFO", f"  🚦 可用性判定: {u_verdict.get('level', '')} - {u_verdict.get('description', '')}")
+                            
+                            recs = j.get("actionable_recommendations", [])
+                            if recs:
+                                self.append_log("WARN", f"  💡 修复与优化建议 ({len(recs)}条):")
+                                for r in recs:
+                                    self.append_log("WARN", f"     • {r}")
+                                    
+                            self.append_log("SUCCESS", f"  📁 详细报告已归档: {rep_path}")
+                            self.append_log("JUDGE", "============================================================")
+                    except Exception as e:
+                        self.append_log("ERROR", f"解析评判报告失败: {str(e)}")
 
     def stop_sandbox_test(self):
         if not self.container_id:
