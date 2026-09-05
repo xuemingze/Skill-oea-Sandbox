@@ -399,12 +399,15 @@ def run_general_flow(materials=None):
 
 def scan_skill_structure_and_vulnerabilities(skill_root="."):
     file_tree = []
-    vulnerabilities = []
+    findings = []
+    binary_files = []
+    
+    ignore_dirs = {"test_materials", "__pycache__", ".git"}
     ignore_files = {"skill_runner.py", "user_input.json", "target.txt", "review_report.json", "diff_report.json", "workflow_report.json"}
-    ignore_dirs = {"test_materials", "__pycache__", ".git", ".cowork-temp"}
+    binary_exts = {'.exe', '.dll', '.so', '.bin', '.pyc', '.pyd', '.wasm', '.dylib', '.vbs', '.bat', '.cmd', '.ps1'}
     
     for root, dirs, files in os.walk(skill_root):
-        dirs[:] = [d for d in dirs if d not in ignore_dirs]
+        dirs[:] = [d for d in dirs if d not in ignore_dirs and (root != skill_root or d != ".cowork-temp")]
         rel_root = os.path.relpath(root, skill_root)
         depth = 0 if rel_root == "." else rel_root.count(os.sep) + 1
         indent = "  " * depth
@@ -420,40 +423,58 @@ def scan_skill_structure_and_vulnerabilities(skill_root="."):
             except Exception:
                 sz_str = "未知"
             file_tree.append(f"{indent}├── {f} ({sz_str})")
-            if f.endswith(('.py', '.sh', '.bat', '.js')):
+            rel_f = os.path.relpath(f_path, skill_root)
+            ext = os.path.splitext(f)[1].lower()
+            
+            # 5. 非文本二进制/脚本文件探测
+            if ext in binary_exts:
                 try:
-                    with original_open(f_path, 'r', encoding='utf-8', errors='ignore') as src_fp:
-                        lines = src_fp.readlines()
-                    for idx, line in enumerate(lines, 1):
-                        stripped = line.strip()
-                        if (".." in stripped and ("os.path.join" in stripped or "../" in stripped or "..\\" in stripped)):
-                            vulnerabilities.append({
-                                "file": f,
-                                "line": idx,
-                                "type": "工作区逃逸/跨层目录越界",
-                                "code": stripped,
-                                "risk": "试图跳出自身技能目录访问宿主工作区，破坏沙箱文件隔离边界"
+                    sz = os.path.getsize(f_path)
+                except Exception:
+                    sz = 0
+                binary_files.append({"file": rel_f, "ext": ext, "size": sz, "risk": "包含非透明二进制/脚本可执行载荷，存在静态审计盲区或二进制投毒风险"})
+                
+            # 代码文本审计
+            if f.endswith(('.py', '.js', '.ts', '.sh', '.html', '.htm', '.php', '.go')):
+                try:
+                    with open(f_path, 'r', encoding='utf-8', errors='ignore') as fp:
+                        lines = fp.readlines()
+                    for line_idx, line in enumerate(lines, 1):
+                        s = line.strip()
+                        if not s or s.startswith('#') or s.startswith('//'):
+                            continue
+                            
+                        # 1. 网络调用
+                        if re.search(r"\b(fetch|axios|requests\.(get|post|put|delete|patch|request)|urllib\.request|aiohttp|httpx|socket\.socket|curl)\b", s, re.I):
+                            findings.append({
+                                "file": rel_f, "line": line_idx, "category": "网络调用",
+                                "code": s[:100], "risk": "检测到外联网络请求/通信调用，需核验通信域名白名单与数据外发合规性"
                             })
-                        elif re.search(r"while\s+True\s*:", stripped) and any("sleep" in l for l in lines[max(0, idx-2):min(len(lines), idx+15)]):
-                            vulnerabilities.append({
-                                "file": f,
-                                "line": idx,
-                                "type": "未受控常驻后台死循环",
-                                "code": stripped,
-                                "risk": "无退出条件的长周期后台循环，易产生孤儿进程与系统资源长期占用"
+                            
+                        # 2. Shell / 进程执行
+                        if re.search(r"\b(child_process|subprocess\.(Popen|run|call|check_output)|os\.system|os\.popen|pty\.spawn|eval\(|exec\()\b", s):
+                            findings.append({
+                                "file": rel_f, "line": line_idx, "category": "Shell/进程执行",
+                                "code": s[:100], "risk": "检测到底层子进程/系统命令执行调用，需严防命令注入与未受控系统提权"
                             })
-                        elif any(f"{drive}:\\" in stripped for drive in "CDEFGHIJKLMNOPQRSTUVWXYZ") and "test_materials" not in stripped:
-                            vulnerabilities.append({
-                                "file": f,
-                                "line": idx,
-                                "type": "硬编码宿主绝对路径",
-                                "code": stripped,
-                                "risk": "强绑定特定环境绝对路径，移植性差且可能越界读取敏感宿主文件"
+                            
+                        # 3. 环境/密钥/凭证访问
+                        if re.search(r"\b(process\.env|os\.environ|os\.getenv)\b|(\b(API_KEY|ACCESS_TOKEN|SECRET_KEY|PASSWORD|PRIVATE_KEY)\b\s*[:=])", s, re.I):
+                            findings.append({
+                                "file": rel_f, "line": line_idx, "category": "环境与凭证访问",
+                                "code": s[:100], "risk": "检测到对系统环境变量或敏感凭据/密钥的读取或赋值行为"
+                            })
+                            
+                        # 4. Base64 编码模式（潜在混淆）
+                        if re.search(r"\b(base64\.(b64decode|decode|b64encode)|atob\(|Buffer\.from\([^)]+,\s*['\"]base64['\"]\))\b", s) or re.search(r"['\"][A-Za-z0-9+/=]{20,}['\"]", s):
+                            findings.append({
+                                "file": rel_f, "line": line_idx, "category": "Base64编码/潜在混淆",
+                                "code": s[:100], "risk": "检测到 Base64 编码数据或解码执行逻辑，存在代码混淆或隐藏 Payload 风险"
                             })
                 except Exception:
                     pass
-    return file_tree, vulnerabilities
-
+                    
+    return file_tree, findings, binary_files
 
 def build_judge_verdict(skill_name, skill_desc, primary, label, conf, materials, traces, file_tree=None, vuln_list=None):
     # 提取事实
@@ -551,19 +572,30 @@ def build_judge_verdict(skill_name, skill_desc, primary, label, conf, materials,
     recs = []
     if vuln_list:
         for v in vuln_list:
-            if v["type"] == "工作区逃逸/跨层目录越界":
-                recs.append(f"修复 {v['file']} (第{v['line']}行): 避免使用 os.path.join(..., '..', '..') 硬编码相对路径，建议改用 os.environ.get('OPENCLAW_WORKSPACE') 或动态向上寻根机制。")
-            elif v["type"] == "未受控常驻后台死循环":
-                recs.append(f"优化 {v['file']} (第{v['line']}行): 避免在脚本内部 while True 阻塞死循环，建议配合系统级守护进程 (如 Cron / Task Scheduler) 触发周期巡检。")
-            elif v["type"] == "硬编码宿主绝对路径":
-                recs.append(f"优化 {v['file']} (第{v['line']}行): 将硬编码的绝对路径替换为基于当前工作区可配置的相对路径或参数注入。")
+            cat = v.get("category", v.get("type", ""))
+            f_name = v.get("file", "未知文件")
+            line_no = v.get("line", 1)
+            if "网络" in cat:
+                recs.append(f"修复 {f_name} (第{line_no}行): 限制任意网络外联通信，建议声明域名白名单并经沙箱安全代理访问。")
+            elif "Shell" in cat or "进程" in cat:
+                recs.append(f"优化 {f_name} (第{line_no}行): 避免直接调用子进程/系统命令执行，推荐使用受限沙箱隔离API。")
+            elif "环境" in cat or "凭证" in cat:
+                recs.append(f"整改 {f_name} (第{line_no}行): 禁止硬编码API密钥或非法遍历环境变量，建议通过配置上下文安全注入。")
+            elif "Base64" in cat or "混淆" in cat:
+                recs.append(f"清理 {f_name} (第{line_no}行): 清除动态Base64 Payload解码执行模式，代码应保持明文可审计。")
+            elif "工作区" in cat or "逃逸" in cat:
+                recs.append(f"修复 {f_name} (第{line_no}行): 避免硬编码跨层相对路径，建议动态向上寻根。")
+            elif "死循环" in cat:
+                recs.append(f"优化 {f_name} (第{line_no}行): 避免while True阻塞死循环，建议交由系统级守护进程管理。")
+            else:
+                recs.append(f"优化 {f_name} (第{line_no}行): {v.get('risk', '建议修复该敏感代码行')}")
     if not recs:
         recs.append("规范建议: 保持当前工程解耦规范，建议补充原子部署与失败自动回滚机制。")
     recommendations_list = recs
 
     # 4. 生成综合 Markdown 分析报告
     tree_str = "\n".join(file_tree) if file_tree else "（无目录信息）"
-    vuln_md = "\n".join(f"- **[{v['type']}]** `{v['file']}` (第{v['line']}行): `{v['code']}`\n  - *风险*: {v['risk']}" for v in vuln_list) if vuln_list else "✅ 静态代码扫描未发现高危越权与逃逸特征"
+    vuln_md = "\n".join(f"- **[{v.get('category', v.get('type', '敏感特征'))}]** `{v['file']}` (第{v['line']}行): `{v['code']}`\n  - *风险*: {v['risk']}" for v in vuln_list) if vuln_list else "✅ 静态代码扫描未发现高危越权与逃逸特征"
     rec_md = "\n".join(f"{i+1}. {r}" for i, r in enumerate(recommendations_list))
 
     detailed_report_md = f'''# 🛡️ AI 技能全真沙箱测试与多维评估分析报告
@@ -626,11 +658,11 @@ def build_judge_verdict(skill_name, skill_desc, primary, label, conf, materials,
 def execute(script_name):
     
     # 提取工程目录树与源码敏感特征
-    tree_lines, vuln_list = scan_skill_structure_and_vulnerabilities(".")
+    tree_lines, vuln_list, binary_list = scan_skill_structure_and_vulnerabilities(".")
     tree_summary = "\n".join(tree_lines) if tree_lines else "根目录下无额外文件"
     log_node("Node-Tree", "提取被测技能工程结构", "Success", f"目录树清单:\n{tree_summary}")
     if vuln_list:
-        vuln_desc = " ; ".join(f"[{v['type']}] {v['file']}:第{v['line']}行" for v in vuln_list)
+        vuln_desc = " ; ".join(f"[{v.get('category', v.get('type', '敏感特征'))}] {v['file']}:第{v['line']}行" for v in vuln_list[:5])
         log_node("Node-Vulnerability-Trace", "扫描被测技能源码敏感与越权特征", "Warning", f"发现[{len(vuln_list)}]处敏感源头: {vuln_desc}")
     else:
         log_node("Node-Vulnerability-Trace", "扫描被测技能源码敏感与越权特征", "Success", "静态扫描未检出跨层逃逸与死循环高危特征")
