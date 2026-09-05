@@ -557,50 +557,58 @@ class MainWindow(QMainWindow):
         self.append_log("INFO", "日志流接收完毕，正在拉取多维深度评估报告...")
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
-        
-        # 尝试读取报告并全景输出
+        # 启动重试拉取机制（解决后端异步写入的毫秒级时间差）
+        QTimer.singleShot(300, lambda: self.fetch_and_display_report(retry_count=0))
+
+    def fetch_and_display_report(self, retry_count=0):
         reports_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "sandbox_reports")
+        found_report = False
+        
         if self.container_id and os.path.exists(reports_dir):
             for f in os.listdir(reports_dir):
                 if self.container_id in f and "执行跟踪" in f and f.endswith(".json"):
+                    found_report = True
                     try:
                         rep_path = os.path.join(reports_dir, f)
                         with open(rep_path, "r", encoding="utf-8") as rf:
                             rep = json.load(rf)
                             j = rep.get("ai_judge_analysis", {})
-                            dims = j.get("dimensions", {})
                             
-                            self.append_log("JUDGE", "============================================================")
-                            self.append_log("JUDGE", "📊 【LLM-as-Judge 最终裁定与多维深度评估汇总】")
-                            self.append_log("VERDICT", f"  🌟 最终裁定: {j.get('final_verdict', 'Pass')} | 综合评分: {j.get('completeness_score', 90)} 分")
-                            self.append_log("INFO", f"  📋 评判结论: {j.get('overall_conclusion', '')}")
-                            
-                            # 输出各维度事实依据
-                            d1 = dims.get("purpose_behavior_alignment", {})
-                            d2 = dims.get("artifact_definition_alignment", {})
-                            d3 = dims.get("security_reasonableness", {})
-                            if d1:
-                                self.append_log("INFO", f"  🎯 行为-用途一致性: [{d1.get('verdict')}] {d1.get('evidence')}")
-                            if d2:
-                                self.append_log("INFO", f"  📦 产物-定义一致性: [{d2.get('verdict')}] {d2.get('evidence')}")
-                            if d3:
-                                self.append_log("WARN" if d3.get('verdict') != '合理' else "INFO", f"  🛡️ 安全性合理性: [{d3.get('verdict')}] {d3.get('evidence')}")
-
-                            # 输出可用性判定与优化建议
-                            u_verdict = j.get("usability_verdict", {})
-                            if u_verdict:
-                                self.append_log("INFO", f"  🚦 可用性判定: {u_verdict.get('level', '')} - {u_verdict.get('description', '')}")
-                            
-                            recs = j.get("actionable_recommendations", [])
-                            if recs:
-                                self.append_log("WARN", f"  💡 修复与优化建议 ({len(recs)}条):")
-                                for r in recs:
-                                    self.append_log("WARN", f"     • {r}")
-                                    
-                            self.append_log("SUCCESS", f"  📁 详细报告已归档: {rep_path}")
-                            self.append_log("JUDGE", "============================================================")
+                            # 1. 优先完整输出 Markdown 深度分析报告
+                            detailed_md = j.get("detailed_report_md", "")
+                            if detailed_md:
+                                self.append_log("JUDGE", "============================================================")
+                                self.append_log("JUDGE", "📊 【LLM-as-Judge 深度评估分析报告 (完整内容)】")
+                                for line in detailed_md.splitlines():
+                                    if line.startswith("# "):
+                                        self.append_log("JUDGE", f"  {line}")
+                                    elif line.startswith("## "):
+                                        self.append_log("JUDGE", f"<br><b>{line}</b>")
+                                    elif line.startswith("### "):
+                                        self.append_log("INFO", f"  {line}")
+                                    elif line.startswith("- **") or line.startswith("1. ") or line.startswith("2. "):
+                                        self.append_log("VERDICT" if "判定" in line or "一致" in line else "WARN", f"  {line}")
+                                    elif line.strip():
+                                        self.append_log("INFO", f"  {line}")
+                                self.append_log("SUCCESS", f"📁 评估报告 JSON 文件已持久化归档: {rep_path}")
+                                self.append_log("JUDGE", "============================================================")
+                            else:
+                                # 回退输出结构化卡片
+                                self.append_log("JUDGE", "============================================================")
+                                self.append_log("VERDICT", f"🌟 最终裁定: {j.get('final_verdict', 'Pass')} | 综合评分: {j.get('completeness_score', 90)} 分")
+                                self.append_log("INFO", f"📋 总体结论: {j.get('overall_conclusion', '')}")
+                                self.append_log("SUCCESS", f"📁 报告文件: {rep_path}")
+                                self.append_log("JUDGE", "============================================================")
+                            return
                     except Exception as e:
                         self.append_log("ERROR", f"解析评判报告失败: {str(e)}")
+                        return
+
+        # 若未找到报告且重试次数小于 6 次，则继续轮询等待后端落盘
+        if not found_report and retry_count < 6:
+            QTimer.singleShot(300, lambda: self.fetch_and_display_report(retry_count + 1))
+        elif not found_report:
+            self.append_log("WARN", "⚠️ 暂未检索到本次执行生成的持久化评估报告文件（可能沙箱测试仍在执行中或未生成产物）。")
 
     def stop_sandbox_test(self):
         if not self.container_id:
