@@ -48,7 +48,7 @@ skill-sandbox/
 
 ### 平台一：作为 AI Agent 技能使用 (Skill 模式)
 
-将本仓库放置于智能体技能目录（如 `~/.agents/skills/skill-sandbox` 或 `~/AppData/Roaming/LobsterAI/SKILLs/skill-sandbox`），Agent 会根据 `SKILL.md` 自动加载并调用。
+将本仓库放置于智能体技能目录（如 `~/.agents/skills/skill-sandbox` 或 `~/AppData/SKILLs/skill-sandbox`），Agent 会根据 `SKILL.md` 自动加载并调用。
 
 #### 命令行调用沙箱测试
 ```bash
