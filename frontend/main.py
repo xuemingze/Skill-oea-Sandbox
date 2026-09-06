@@ -1,3 +1,4 @@
+from .recycle_panel import RecycleManagerPanel
 # -*- coding: utf-8 -*-
 import sys
 import os

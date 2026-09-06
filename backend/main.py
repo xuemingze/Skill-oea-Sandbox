@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import uvicorn
 from sandbox_manager import SandboxLifecycleManager
+from recycle_manager import ReportRecycleManager
 import logging
 from logging.handlers import RotatingFileHandler
 
@@ -22,6 +23,7 @@ logger.addHandler(console_handler)
 
 app = FastAPI(title="Skill Sandbox Core API")
 sandbox_manager = SandboxLifecycleManager()
+recycle_manager = ReportRecycleManager()
 
 class CustomMaterialItem(BaseModel):
     type: str  # 'image' | 'file' | 'text'
