@@ -313,14 +313,11 @@ class RecycleManagerPanel(QGroupBox):
                 or kw in it.get("status", "").lower()
             ]
 
-        # 表二：专项显示状态为【已过期】、【即将过期】或最新批次项
+        # 表二：专项仅显示状态为【已过期】或【即将过期】的待处理项
         self.filtered_spec = [
             it for it in self.filtered_all
             if it.get("status") in ["已过期", "即将过期"]
         ]
-        # 若没有过期项，表二展示最新前 10 条待处理项
-        if not self.filtered_spec and self.filtered_all:
-            self.filtered_spec = self.filtered_all[:10]
 
         self.render_tables()
 
@@ -430,13 +427,39 @@ class RecycleManagerPanel(QGroupBox):
             self.execute_clean_api(dlg.choice, overdue_paths)
 
     def execute_clean_api(self, action, paths):
+        # 1. 优先尝试 REST API（若后端在线）
+        api_success = False
         try:
-            r = requests.post(f"{self.backend_url}/api/v1/recycle/action", json={"action": action, "paths": paths}, timeout=10)
+            r = requests.post(f"{self.backend_url}/api/v1/recycle/action", json={"action": action, "paths": paths}, timeout=3)
             if r.status_code == 200:
-                action_text = "移动到回收站暂存" if action == "trash" else "提炼归档至 ZIP"
-                self.win.append_log("SUCCESS", f"✅ 已成功将 [{len(paths)}] 个文件/目录 {action_text}")
-                self.do_scan()
-            else:
-                self.win.append_log("ERROR", "回收清理接口调用返回异常")
-        except Exception as e:
-            self.win.append_log("ERROR", f"执行回收操作失败: {e}")
+                api_success = True
+        except Exception:
+            api_success = False
+
+        # 2. 若 API 离线/失败，自动无缝切换本地嵌入式引擎直接执行
+        if not api_success:
+            try:
+                from recycle_manager import ReportRecycleManager
+            except (ImportError, ValueError):
+                backend_dir = os.path.abspath(os.path.join(frontend_dir, "..", "backend"))
+                if backend_dir not in sys.path:
+                    sys.path.insert(0, backend_dir)
+                from recycle_manager import ReportRecycleManager
+
+            try:
+                mgr = ReportRecycleManager()
+                if action == "trash":
+                    res = mgr.move_to_trash(paths)
+                elif action == "archive":
+                    res = mgr.archive_and_distill(paths)
+                else:
+                    res = {"status": "success"}
+                api_success = True
+            except Exception as le:
+                self.win.append_log("ERROR", f"本地回收清理引擎执行异常: {le}")
+                return
+
+        if api_success:
+            action_text = "移动到回收站暂存 (_trash 24h)" if action == "trash" else "提炼归档至 ZIP (_archives)"
+            self.win.append_log("SUCCESS", f"✅ 已成功将 [{len(paths)}] 个文件/目录 {action_text}")
+            self.do_scan()
