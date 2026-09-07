@@ -34,7 +34,8 @@ python frontend/main.py --port 8000
 ## 核心能力
 1. **领域感知与测试流定制**：自动识别 `code_development`, `ocr_document`, `memory_knowledge`, `workflow_automation`, `system_architecture` 等技能领域并动态提供测试样例。
 2. **5 大核心安全审查项深度审计**：静态深度分析与沙箱内核 Hook 双重拦截，全方位覆盖网络调用、Shell 执行、密钥环境、Base64 混淆与二进制文件。
-3. **多维 LLM-as-Judge 深度报告**：输出工程目录树、敏感源头定位、偏差剖析、可用性判定及代码级修复建议。
+3. **阶段七：全域关键词冲突与多技能覆盖扫描**：执行前自动对已安装全量技能进行倒排索引与分级预警（CRITICAL/HIGH/MEDIUM），并输出意图消歧建议。
+4. **多维 LLM-as-Judge 深度报告**：输出工程目录树、敏感源头定位、偏差剖析、可用性判定及代码级修复建议。
 
 ## AI 主导的报告与临时文件生命周期回收机制 (Lifecycle Recycling Protocol)
 
