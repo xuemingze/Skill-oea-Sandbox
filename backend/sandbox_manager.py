@@ -53,7 +53,7 @@ def secure_open(file, mode='r', buffering=-1, encoding=None, errors=None, newlin
     if "w" in mode or "a" in mode or "+" in mode:
         if not (abs_path.startswith(sandbox_root) or abs_path.startswith(memory_root)):
             log_node("Kernel_Hook", f"拦截越权写入: {file}", "Blocked",
-                     f"目标绝对路径: {abs_path} | 越界原因: 不在沙箱根({sandbox_root})或记忆区({memory_root})内 | 处置: 内核拒绝写操作")
+                     f"阻止目标试图创建或修改沙箱外部文件: {abs_path} | 越界原因: 目标路径超出沙箱根目录({sandbox_root})及记忆区 | 处置: 内核阻止目标非法文件创建操作")
             raise PermissionError(f"Secure Sandbox Violation: {file}")
     return original_open(file, mode, buffering, encoding, errors, newline, closefd, opener)
 
@@ -514,7 +514,7 @@ def build_judge_verdict(skill_name, skill_desc, primary, label, conf, materials,
     expectation = DOMAIN_EXPECTATION.get(primary, "通用数据处理")
     has_expected = any(("SOP-Process-Data" == t["node"] and t["status"] == "Success") for t in traces)
     # 检查 process_findings 是否体现了主领域的核心行为
-    behavior_matched = bool(process_findings) and any("成功" in p or "检出" in p or "识别" in p or "比对" in p or "沉淀" in p or "校验" in p or "初始化" in p or "部署" in p or "StateDB" in p for p in process_findings)
+    behavior_matched = bool(process_findings) and any("成功" in p or "检出" in p or "识别" in p or "比对" in p or "沉淀" in p or "校验" in p or "初始化" in p or "部署" in p or "StateDB" in p or "执行" in p or "清洗" in p or "规则" in p for p in process_findings)
 
     if behavior_matched and has_expected:
         dim1 = {"verdict": "一致", "score": 95,
@@ -537,6 +537,8 @@ def build_judge_verdict(skill_name, skill_desc, primary, label, conf, materials,
         dim2 = {"verdict": "一致", "score": 95, "evidence": f"产物为沉淀的新增知识点，符合『记忆管理』技能定义"}
     elif primary == "file_diff" and any("差异" in p or "第" in p for p in process_findings):
         dim2 = {"verdict": "一致", "score": 95, "evidence": f"产物为差异清单，符合『文件差异比对』技能定义"}
+    elif primary == "workflow_automation" and any("按步骤定义执行" in p or "输出产物" in p or "规则处理" in p for p in process_findings):
+        dim2 = {"verdict": "一致", "score": 95, "evidence": f"产物为工作流处理日志与执行结果，符合『工作流编排/任务调度』技能定义"}
     else:
         dim2 = {"verdict": "未充分验证", "score": 60, "evidence": "未能从执行轨迹中确认产物是否完全符合技能定义，建议补充产物校验"}
 
@@ -747,14 +749,14 @@ def execute(script_name):
     probe_abs = os.path.abspath(probe_path)
     probe_content = "VBScript 恶意载荷: CreateObject('WScript.Shell').Run('calc.exe')"
     log_node("SOP-Security-Probe", "检测沙箱封禁路径约束边界", "Pending",
-             f"越权目标绝对路径: {probe_abs} | 计划写入内容: '{probe_content}' | 目的: 验证防污染屏障")
+             f"探测目标目的: 尝试向沙箱外创建并写入文件 {probe_abs} (恶意代码载荷) | 验证目的: 确认沙箱防污染隔离屏障有效性")
     try:
         with builtins.open(probe_path, "w") as f:
             f.write(probe_content)
-        log_node("SOP-Security-Probe", "宿主机绝对路径外溢拦截实验", "Failed", f"绝对路径 {probe_abs} 写入未被拦截（沙箱边界失效）")
+        log_node("SOP-Security-Probe", "宿主机绝对路径外溢拦截实验", "Failed", f"未成功阻止目标创建文件: {probe_abs}（沙箱边界失效）")
     except PermissionError as e:
         log_node("SOP-Security-Probe", "宿主机绝对路径外溢拦截实验", "Failed",
-                 f"绝对路径: {probe_abs} | 尝试内容: '{probe_content}' | 结果: 写入被内核拦截，防污染屏障生效")
+                 f"已成功阻止目标创建或修改文件: {probe_abs} (尝试写入恶意脚本载荷) | 防护结果: 内核防护拦截生效，主机隔离完好")
 
     # LLM 裁判：多维评估
     verdict = build_judge_verdict(skill_name, skill_desc, primary, label, conf, materials, TRACE_LOGS, file_tree=tree_lines, vuln_list=vuln_list, binary_list=binary_list)
