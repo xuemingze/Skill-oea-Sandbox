@@ -19,7 +19,8 @@ import requests
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QTextEdit, QPlainTextEdit,
-    QGroupBox, QFileDialog, QSplitter, QMessageBox, QListWidget, QListWidgetItem, QAbstractItemView
+    QGroupBox, QFileDialog, QSplitter, QMessageBox, QListWidget, QListWidgetItem, QAbstractItemView,
+    QTabWidget
 )
 from PySide6.QtCore import Qt, QThread, Signal, Slot, QTimer
 from PySide6.QtGui import QTextCursor, QFont, QColor, QIcon
@@ -160,10 +161,15 @@ class WebSocketLogWorker(QThread):
             self.log_received.emit(message)
 
         def on_error(ws, error):
-            self.log_received.emit(f"[WS ERROR] 连接异常: {error}")
+            # 若连接正常关闭或正在停止，不打印 connection was lost 错误
+            if self._is_running:
+                err_str = str(error)
+                if "Connection to remote host was lost" not in err_str and "10054" not in err_str:
+                    self.log_received.emit(f"[WS ERROR] 连接异常: {error}")
 
         def on_close(ws, close_status_code, close_msg):
-            self.log_received.emit(f"[WS] 连接已断开 ({close_status_code})")
+            if close_status_code is not None or close_msg is not None:
+                self.log_received.emit(f"[WS] 连接已正常结束 ({close_status_code or 'OK'})")
             self.connection_closed.emit()
 
         self.ws = websocket.WebSocketApp(
@@ -328,19 +334,34 @@ class MainWindow(QMainWindow):
         btn_layout.addWidget(self.btn_stop, 1)
         main_layout.addLayout(btn_layout)
 
-        # 4. 报告与临时文件回收生命周期管理面板
-        self.recycle_panel = RecycleManagerPanel(self)
-        main_layout.addWidget(self.recycle_panel)
+        # 4. 主功能选项卡 (TabWidget: 标签页1=沙箱执行与仿真终端, 标签页2=报告与临时文件生命周期回收)
+        self.tab_widget = QTabWidget()
+        self.tab_widget.setStyleSheet(
+            "QTabWidget::pane { border: 1px solid #dcdcdc; background: white; border-radius: 4px; }\n"
+            "QTabBar::tab { font-size: 13px; font-weight: bold; padding: 8px 16px; min-width: 150px; background: #f0f0f0; border: 1px solid #dcdcdc; border-bottom: none; border-top-left-radius: 4px; border-top-right-radius: 4px; margin-right: 4px; }\n"
+            "QTabBar::tab:selected { background: #ffffff; color: #007acc; border-bottom: 2px solid #007acc; }\n"
+            "QTabBar::tab:hover { background: #e8f4fc; }"
+        )
 
-        # 5. 仿真终端控制台 (流式输出)
-        term_group = QGroupBox("💻 仿真终端控制台 (实时状态追踪 / Hook 拦截 / 事实日志)")
+        # Tab 1: 沙箱实时执行与仿真终端
+        tab_exec = QWidget()
+        tab_exec_layout = QVBoxLayout(tab_exec)
+        tab_exec_layout.setContentsMargins(8, 8, 8, 8)
+        term_group = QGroupBox("💻 仿真终端控制台 (实时状态追踪 / Hook 拦截 / 事实日志 / 深度评估报告)")
         term_layout = QVBoxLayout()
         self.text_terminal = QTextEdit()
         self.text_terminal.setReadOnly(True)
         self.text_terminal.setStyleSheet("background-color: #1e1e1e; color: #d4d4d4; font-family: Consolas, 'Courier New', monospace; font-size: 12px; line-height: 1.4;")
         term_layout.addWidget(self.text_terminal)
         term_group.setLayout(term_layout)
-        main_layout.addWidget(term_group, 2)
+        tab_exec_layout.addWidget(term_group)
+        self.tab_widget.addTab(tab_exec, "💻 沙箱执行与仿真终端")
+
+        # Tab 2: 报告与临时文件回收生命周期管理
+        self.recycle_panel = RecycleManagerPanel(self)
+        self.tab_widget.addTab(self.recycle_panel, "📦 报告与临时文件回收生命周期管理")
+
+        main_layout.addWidget(self.tab_widget, 1)
 
     def add_image_material(self):
         files, _ = QFileDialog.getOpenFileNames(

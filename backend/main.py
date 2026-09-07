@@ -83,11 +83,16 @@ async def stream_sandbox_logs(websocket: WebSocket, container_id: str, script_na
         except Exception as ge:
             logger.error(f"自动复制报告失败: {ge}")
         await websocket.send_text('\n[系统] Skill 执行完毕。')
+        await websocket.close(code=1000)
     except WebSocketDisconnect:
         logger.info(f'GUI 客户端主动断开了沙箱 {container_id} 的日志流。')
     except Exception as e:
         logger.exception(f'异常: 日志流中断 - {e}')
-        await websocket.send_text(f'\n[系统异常] 日志流中断: {str(e)}')
+        try:
+            await websocket.send_text(f'\n[系统异常] 日志流中断: {str(e)}')
+            await websocket.close(code=1011)
+        except Exception:
+            pass
     finally:
         pass
 
