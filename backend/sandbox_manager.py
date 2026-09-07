@@ -8,6 +8,11 @@ import subprocess
 import time
 from typing import Dict, Any, Generator, Tuple, Optional, List
 
+try:
+    from .conflict_scanner import SkillConflictScanner
+except (ImportError, ValueError):
+    from conflict_scanner import SkillConflictScanner
+
 logger = logging.getLogger(__name__)
 
 SKILL_RUNNER_CODE = r"""## -*- coding: utf-8 -*-
@@ -879,6 +884,7 @@ class SandboxLifecycleManager:
         self.active_sandboxes[sandbox_id] = {
             "path": sandbox_path,
             "skill_dir": sandbox_skill_dir,
+            "original_skill_dir": skill_dir,
             "memory_dir": sandbox_memory_dir,
             "initial_state": initial_state,
             "status": "ready",
@@ -949,6 +955,31 @@ class SandboxLifecycleManager:
         sb = self.active_sandboxes[sandbox_id]
         sandbox_path = sb["path"]
         initial_state = sb["initial_state"]
+        orig_skill_dir = sb.get("original_skill_dir", "")
+
+        # 预先为沙箱中生成的报告文件注入关键词冲突预警
+        for root, _, files in os.walk(sandbox_path):
+            for f in files:
+                if f.endswith(".json") and "偏差报告" in f:
+                    src_f = os.path.join(root, f)
+                    try:
+                        with open(src_f, 'r', encoding='utf-8') as rf:
+                            rep_data = json.load(rf)
+                        
+                        target_to_scan = orig_skill_dir or os.path.join(sandbox_path, "skill")
+                        conflict_scanner = SkillConflictScanner()
+                        conflict_info = conflict_scanner.check_skill_conflict(target_to_scan)
+                        rep_data["keyword_conflict_analysis"] = conflict_info
+                        
+                        if "ai_judge_analysis" in rep_data and "detailed_report_md" in rep_data["ai_judge_analysis"]:
+                            conflict_md = conflict_scanner.generate_conflict_markdown(conflict_info)
+                            rep_data["ai_judge_analysis"]["detailed_report_md"] += "\n\n" + conflict_md
+                        
+                        with open(src_f, 'w', encoding='utf-8') as wf:
+                            json.dump(rep_data, wf, ensure_ascii=False, indent=2)
+                    except Exception as ce:
+                        logger.warning(f"预先注入关键词冲突预警分析失败: {ce}")
+
         current_state = self._capture_dir_state(sandbox_path)
         
         added = list(set(current_state.keys()) - set(initial_state.keys()))
@@ -990,11 +1021,33 @@ class SandboxLifecycleManager:
         # 归档该沙箱执行期间生成的 json 报告到永久 reports_dir
         sb = self.active_sandboxes[sandbox_id]
         sandbox_path = sb["path"]
+        orig_skill_dir = sb.get("original_skill_dir", "")
         
         for root, _, files in os.walk(sandbox_path):
             for f in files:
                 if f.endswith(".json") and "偏差报告" in f:
                     src_f = os.path.join(root, f)
+                    
+                    # 动态注入关键词冲突扫描预警分析
+                    try:
+                        with open(src_f, 'r', encoding='utf-8') as rf:
+                            rep_data = json.load(rf)
+                        
+                        target_to_scan = orig_skill_dir or os.path.join(sandbox_path, "skill")
+                        conflict_scanner = SkillConflictScanner()
+                        conflict_info = conflict_scanner.check_skill_conflict(target_to_scan)
+                        rep_data["keyword_conflict_analysis"] = conflict_info
+                        
+                        # 同步在 Markdown 报告中追加关键词冲突预警章节
+                        if "ai_judge_analysis" in rep_data and "detailed_report_md" in rep_data["ai_judge_analysis"]:
+                            conflict_md = conflict_scanner.generate_conflict_markdown(conflict_info)
+                            rep_data["ai_judge_analysis"]["detailed_report_md"] += "\n\n" + conflict_md
+                        
+                        with open(src_f, 'w', encoding='utf-8') as wf:
+                            json.dump(rep_data, wf, ensure_ascii=False, indent=2)
+                    except Exception as ce:
+                        logger.warning(f"注入关键词冲突预警分析失败: {ce}")
+
                     dst_f = os.path.join(self.reports_dir, f"{sandbox_id}_{f}")
                     try:
                         shutil.copy2(src_f, dst_f)

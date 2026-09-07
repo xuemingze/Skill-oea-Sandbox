@@ -124,6 +124,28 @@ async def handle_recycle_action(action_data: Dict[str, Any]):
     else:
         return {'status': 'error', 'msg': f'未知操作类型: {action}'}
 
+try:
+    from .conflict_scanner import SkillConflictScanner
+except (ImportError, ValueError):
+    from conflict_scanner import SkillConflictScanner
+
+conflict_scanner = SkillConflictScanner()
+
+@app.get('/api/v1/conflict/scan_all')
+async def scan_all_skills_conflicts():
+    '''全局扫描所有已安装技能的触发词与冲突'''
+    res = conflict_scanner.scan_all_skills()
+    return {'status': 'success', **res}
+
+@app.post('/api/v1/conflict/check')
+async def check_target_skill_conflict(req: Dict[str, Any]):
+    '''检测指定技能包的触发词冲突'''
+    skill_path = req.get('skill_path')
+    if not skill_path:
+        raise HTTPException(status_code=400, detail='skill_path 必填')
+    res = conflict_scanner.check_skill_conflict(skill_path)
+    return {'status': 'success', **res}
+
 if __name__ == '__main__':
     port = 8000
     if len(sys.argv) > 2 and sys.argv[1] == '--port':
