@@ -328,7 +328,11 @@ class MainWindow(QMainWindow):
         btn_layout.addWidget(self.btn_stop, 1)
         main_layout.addLayout(btn_layout)
 
-        # 4. 仿真终端控制台 (流式输出)
+        # 4. 报告与临时文件回收生命周期管理面板
+        self.recycle_panel = RecycleManagerPanel(self)
+        main_layout.addWidget(self.recycle_panel)
+
+        # 5. 仿真终端控制台 (流式输出)
         term_group = QGroupBox("💻 仿真终端控制台 (实时状态追踪 / Hook 拦截 / 事实日志)")
         term_layout = QVBoxLayout()
         self.text_terminal = QTextEdit()
@@ -482,6 +486,11 @@ class MainWindow(QMainWindow):
 
     @Slot(int)
     def _on_backend_ready(self, port):
+        # 后端就绪后，同步更新回收面板的 backend_url 并加载策略
+        if hasattr(self, 'recycle_panel'):
+            self.recycle_panel.backend_url = f"http://127.0.0.1:{port}"
+            self.recycle_panel.load_initial_policy()
+
         try:
             res = requests.post(
                 API_BASE_URL.format(port=port) + "/start",
