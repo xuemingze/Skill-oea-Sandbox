@@ -6,7 +6,15 @@ from PySide6.QtWidgets import (
     QProgressBar, QMessageBox, QWidget, QAbstractItemView
 )
 from PySide6.QtCore import Qt, QTimer
-from .recycle_dialogs import RecyclePolicyInitDialog, RecycleConfirmActionDialog
+
+frontend_dir = os.path.dirname(os.path.abspath(__file__))
+if frontend_dir not in sys.path:
+    sys.path.insert(0, frontend_dir)
+
+try:
+    from .recycle_dialogs import RecyclePolicyInitDialog, RecycleConfirmActionDialog
+except (ImportError, ValueError, SystemError):
+    from recycle_dialogs import RecyclePolicyInitDialog, RecycleConfirmActionDialog
 
 class RecycleManagerPanel(QGroupBox):
     """报告与沙箱临时文件回收管理组件"""

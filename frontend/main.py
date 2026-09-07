@@ -1,7 +1,16 @@
-from .recycle_panel import RecycleManagerPanel
 # -*- coding: utf-8 -*-
 import sys
 import os
+
+frontend_dir = os.path.dirname(os.path.abspath(__file__))
+if frontend_dir not in sys.path:
+    sys.path.insert(0, frontend_dir)
+
+try:
+    from .recycle_panel import RecycleManagerPanel
+except (ImportError, ValueError):
+    from recycle_panel import RecycleManagerPanel
+
 import json
 import argparse
 import socket
