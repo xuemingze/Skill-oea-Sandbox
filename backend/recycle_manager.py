@@ -41,10 +41,13 @@ class ReportRecycleManager:
             "last_scan_time": None
         }
 
-    def save_policy(self, policy: Dict[str, Any]) -> Dict[str, Any]:
+    def save_policy(self, policy: Any) -> Dict[str, Any]:
         self._ensure_dirs()
         cur = self.get_policy()
-        cur.update(policy)
+        if isinstance(policy, dict):
+            cur.update(policy)
+        elif isinstance(policy, (int, float)):
+            cur["retention_days"] = int(policy)
         cur["is_configured"] = True
         cur["updated_at"] = datetime.now().isoformat()
         with open(self.policy_file, "w", encoding="utf-8") as f:

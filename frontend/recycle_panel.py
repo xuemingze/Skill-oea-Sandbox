@@ -220,14 +220,37 @@ class RecycleManagerPanel(QGroupBox):
 
     def save_policy(self, silent=False):
         days = self.spin_retention.value()
+        saved = False
+        # 1. 优先尝试 REST API 保存
         try:
             r = requests.post(f"{self.backend_url}/api/v1/recycle/policy", json={"retention_days": days}, timeout=3)
-            if r.status_code == 200 and not silent:
-                self.win.append_log("SUCCESS", f"💾 回收策略已保存: 周期设为 {days} 天")
-                self.do_scan()
-        except Exception as e:
+            if r.status_code == 200:
+                saved = True
+        except Exception:
+            saved = False
+
+        # 2. 若 API 离线，自动无缝切换本地嵌入式引擎直接保存策略
+        if not saved:
+            try:
+                from recycle_manager import ReportRecycleManager
+            except (ImportError, ValueError):
+                backend_dir = os.path.abspath(os.path.join(frontend_dir, "..", "backend"))
+                if backend_dir not in sys.path:
+                    sys.path.insert(0, backend_dir)
+                from recycle_manager import ReportRecycleManager
+            try:
+                mgr = ReportRecycleManager()
+                mgr.save_policy(days)
+                saved = True
+            except Exception as e:
+                if not silent:
+                    self.win.append_log("ERROR", f"本地引擎保存回收策略失败: {e}")
+                return
+
+        if saved:
             if not silent:
-                self.win.append_log("ERROR", f"保存回收策略失败: {e}")
+                self.win.append_log("SUCCESS", f"💾 回收策略已保存: 周期设为 {days} 天")
+            self.do_scan(silent=silent)
 
     def do_scan(self, silent=False):
         self.set_busy(True)
