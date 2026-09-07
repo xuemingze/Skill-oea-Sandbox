@@ -91,6 +91,38 @@ async def stream_sandbox_logs(websocket: WebSocket, container_id: str, script_na
     finally:
         pass
 
+@app.get('/api/v1/recycle/policy')
+async def get_recycle_policy():
+    '''获取当前报告与临时文件回收策略'''
+    return {'status': 'success', 'policy': recycle_manager.get_policy()}
+
+@app.post('/api/v1/recycle/policy')
+async def update_recycle_policy(policy_data: Dict[str, Any]):
+    '''更新回收策略配置'''
+    saved = recycle_manager.save_policy(policy_data)
+    return {'status': 'success', 'policy': saved}
+
+@app.post('/api/v1/recycle/scan')
+async def scan_recycle_files(req: Optional[Dict[str, Any]] = None):
+    '''扫描过期报告与临时文件'''
+    retention_days = req.get('retention_days') if req else None
+    res = recycle_manager.scan_files(retention_days=retention_days)
+    return {'status': 'success', **res}
+
+@app.post('/api/v1/recycle/action')
+async def handle_recycle_action(action_data: Dict[str, Any]):
+    '''处理文件清理或归档操作: action='trash' | 'archive', paths=[...]'''
+    action = action_data.get('action', 'trash')
+    paths = action_data.get('paths', [])
+    if action == 'trash':
+        res = recycle_manager.move_to_trash(paths)
+        return {'status': 'success', 'action': 'trash', **res}
+    elif action == 'archive':
+        res = recycle_manager.distill_and_archive(paths)
+        return {'status': 'success', 'action': 'archive', **res}
+    else:
+        return {'status': 'error', 'msg': f'未知操作类型: {action}'}
+
 if __name__ == '__main__':
     port = 8000
     if len(sys.argv) > 2 and sys.argv[1] == '--port':
