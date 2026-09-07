@@ -128,6 +128,16 @@ class BackendStartWorker(QThread):
         self.port = port
 
     def run(self):
+        # 1. 检查目标端口是否已有健康的服务在运行（如已常驻或先前启动）
+        try:
+            r = requests.get(f"http://127.0.0.1:{self.port}/api/v1/health", timeout=1)
+            if r.status_code == 200:
+                self.log.emit("INFO", f"✅ 检测到端口 {self.port} 已有健康后端服务运行，直接复用连接")
+                self.ready.emit(self.port)
+                return
+        except requests.RequestException:
+            pass
+
         self.log.emit("INFO", f"正在拉起本地后端服务 (端口 {self.port})...")
         if not self.server_manager.launch(self.port):
             self.failed.emit("后端启动失败: 无法执行启动命令或文件缺失")
