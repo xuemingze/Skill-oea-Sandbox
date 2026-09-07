@@ -1005,11 +1005,19 @@ class SandboxLifecycleManager:
                 except Exception as e:
                     logger.warning(f"无法将产物持久化到报告区: {e}")
 
+        # 识别主持久化报告路径
+        main_report_file = None
+        for p in saved_artifacts:
+            if p.endswith(".json") and ("执行跟踪" in p or "偏差报告" in p):
+                main_report_file = p
+                break
+
         diff = {
             "artifacts_added": [f for f in added if not f.endswith(".pyc") and "__pycache__" not in f],
             "artifacts_modified": [f for f in modified if not f.endswith(".pyc") and "__pycache__" not in f],
             "files_removed": removed,
-            "persisted_artifacts": saved_artifacts
+            "persisted_artifacts": saved_artifacts,
+            "report_file": main_report_file
         }
         return diff
 
