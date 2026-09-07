@@ -174,7 +174,8 @@ class RecycleManagerPanel(QGroupBox):
         """)
 
     def load_initial_policy(self):
-        """检查并加载后端策略配置，若未初始化则唤起模态对话框"""
+        """检查并加载后端或本地策略配置，若未初始化则唤起模态对话框"""
+        policy_loaded = False
         try:
             r = requests.get(f"{self.backend_url}/api/v1/recycle/policy", timeout=2)
             if r.status_code == 200:
@@ -182,6 +183,7 @@ class RecycleManagerPanel(QGroupBox):
                 is_conf = data.get("is_configured", False)
                 days = data.get("retention_days", 7)
                 self.spin_retention.setValue(days)
+                policy_loaded = True
                 if not is_conf:
                     dlg = RecyclePolicyInitDialog(self.win, current_days=days)
                     if dlg.exec() == RecyclePolicyInitDialog.Accepted:
@@ -189,8 +191,32 @@ class RecycleManagerPanel(QGroupBox):
                         self.save_policy(silent=True)
                         self.win.append_log("SUCCESS", f"📦 已初始化报告回收周期为: {dlg.selected_days} 天")
                 self.do_scan(silent=True)
+                return
         except Exception:
             pass
+
+        # 若后端未启动，回退到本地读取
+        try:
+            cur_dir = os.path.dirname(os.path.abspath(__file__))
+            parent_dir = os.path.dirname(cur_dir)
+            backend_dir = os.path.join(parent_dir, "backend")
+            if backend_dir not in sys.path:
+                sys.path.insert(0, backend_dir)
+            from recycle_manager import ReportRecycleManager
+            mgr = ReportRecycleManager()
+            pol = mgr.get_policy()
+            is_conf = pol.get("is_configured", False)
+            days = pol.get("retention_days", 7)
+            self.spin_retention.setValue(days)
+            if not is_conf:
+                dlg = RecyclePolicyInitDialog(self.win, current_days=days)
+                if dlg.exec() == RecyclePolicyInitDialog.Accepted:
+                    self.spin_retention.setValue(dlg.selected_days)
+                    mgr.save_policy(dlg.selected_days)
+                    self.win.append_log("SUCCESS", f"📦 已初始化报告回收周期为: {dlg.selected_days} 天")
+            self.do_scan(silent=True)
+        except Exception:
+            self.do_scan(silent=True)
 
     def save_policy(self, silent=False):
         days = self.spin_retention.value()
@@ -211,22 +237,58 @@ class RecycleManagerPanel(QGroupBox):
 
     def _execute_scan_request(self, silent):
         try:
-            r = requests.post(f"{self.backend_url}/api/v1/recycle/scan", json={"retention_days": self.spin_retention.value()}, timeout=8)
-            if r.status_code == 200:
-                data = r.json()
-                raw_items = data.get("items", [])
-                # 按照生成修改时间强制倒序排序（最新数据置顶）
-                raw_items.sort(key=lambda x: x.get("mtime", 0), reverse=True)
-                self.all_items = raw_items
-                self.apply_filter()
-                if not silent:
-                    self.win.append_log("SUCCESS", f"✅ 扫描完成: 检索到 {len(self.all_items)} 项历史产物，已过期 {data.get('overdue_count',0)} 项")
+            # 1. 优先尝试通过后端 REST API 扫描
+            try:
+                r = requests.post(f"{self.backend_url}/api/v1/recycle/scan", json={"retention_days": self.spin_retention.value()}, timeout=4)
+                if r.status_code == 200:
+                    data = r.json()
+                    raw_items = data.get("items", [])
+                    raw_items.sort(key=lambda x: x.get("mtime", 0), reverse=True)
+                    self.all_items = raw_items
+                    self.apply_filter()
+                    if not silent:
+                        self.win.append_log("SUCCESS", f"✅ 扫描完成: 检索到 {len(self.all_items)} 项历史产物，已过期 {data.get('overdue_count',0)} 项")
+                    return
+            except Exception:
+                pass
+
+            # 2. 若后端服务尚未启动或 API 请求未响应，直接采用本地直读引擎执行扫描
+            ReportRecycleManager = None
+            try:
+                # 尝试从 backend 目录动态导入
+                cur_dir = os.path.dirname(os.path.abspath(__file__))
+                parent_dir = os.path.dirname(cur_dir)
+                backend_dir = os.path.join(parent_dir, "backend")
+                if backend_dir not in sys.path:
+                    sys.path.insert(0, backend_dir)
+                if parent_dir not in sys.path:
+                    sys.path.insert(0, parent_dir)
+                
+                from recycle_manager import ReportRecycleManager
+            except Exception:
+                try:
+                    from backend.recycle_manager import ReportRecycleManager
+                except Exception:
+                    pass
+
+            if ReportRecycleManager:
+                try:
+                    mgr = ReportRecycleManager()
+                    data = mgr.scan_files(retention_days=self.spin_retention.value())
+                    raw_items = data.get("items", [])
+                    raw_items.sort(key=lambda x: x.get("mtime", 0), reverse=True)
+                    self.all_items = raw_items
+                    self.apply_filter()
+                    if not silent:
+                        self.win.append_log("SUCCESS", f"✅ [本地引擎] 扫描完成: 检索到 {len(self.all_items)} 项历史产物，已过期 {data.get('overdue_count',0)} 项")
+                    return
+                except Exception as le:
+                    if not silent:
+                        self.win.append_log("ERROR", f"本地扫描引擎执行异常: {le}")
+                    return
             else:
                 if not silent:
-                    self.win.append_log("WARN", "扫描请求返回异常")
-        except Exception as e:
-            if not silent:
-                self.win.append_log("ERROR", f"扫描执行失败: {e}")
+                    self.win.append_log("WARN", "扫描服务暂时不可用，请确认沙箱服务或网络连接")
         finally:
             self.set_busy(False)
 
