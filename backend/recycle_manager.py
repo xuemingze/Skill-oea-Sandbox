@@ -222,6 +222,9 @@ class ReportRecycleManager:
             "errors": errors
         }
 
+    def distill_and_archive(self, target_paths: List[str]) -> Dict[str, Any]:
+        return self.archive_and_distill(target_paths)
+
     def _cleanup_old_trash(self):
         if not os.path.exists(self.trash_dir):
             return

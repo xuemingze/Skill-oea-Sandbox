@@ -110,6 +110,7 @@ async def scan_recycle_files(req: Optional[Dict[str, Any]] = None):
     return {'status': 'success', **res}
 
 @app.post('/api/v1/recycle/action')
+@app.post('/api/v1/recycle/clean')
 async def handle_recycle_action(action_data: Dict[str, Any]):
     '''处理文件清理或归档操作: action='trash' | 'archive', paths=[...]'''
     action = action_data.get('action', 'trash')
