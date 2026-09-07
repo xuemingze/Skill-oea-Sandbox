@@ -11,6 +11,11 @@ try:
 except (ImportError, ValueError):
     from recycle_panel import RecycleManagerPanel
 
+try:
+    from .keyword_panel import KeywordManagerPanel
+except (ImportError, ValueError):
+    from keyword_panel import KeywordManagerPanel
+
 import json
 import argparse
 import socket
@@ -370,6 +375,10 @@ class MainWindow(QMainWindow):
         # Tab 2: 报告与临时文件回收生命周期管理
         self.recycle_panel = RecycleManagerPanel(self)
         self.tab_widget.addTab(self.recycle_panel, "📦 报告与临时文件回收生命周期管理")
+
+        # Tab 3: 全域技能触发词库与消歧管理
+        self.keyword_panel = KeywordManagerPanel(self)
+        self.tab_widget.addTab(self.keyword_panel, "🏷️ 全域触发词库与 AI 路由定制")
 
         main_layout.addWidget(self.tab_widget, 1)
 
