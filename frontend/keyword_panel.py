@@ -92,9 +92,18 @@ class KeywordManagerPanel(QWidget):
         filter_bar.addWidget(lbl_filter_domain)
 
         self.combo_domain = QComboBox()
-        self.combo_domain.addItems(["全部领域", "软件开发/编程专家", "系统架构/基础设施", "文档识别/票据OCR", "知识图谱/记忆管理", "财务审计/核算风控", "音视频与图像生成", "工作流编排/通用任务"])
+        self.combo_domain.addItems(["全部领域", "软件开发/编程专家", "系统架构/基础设施", "文档识别/票据OCR", "知识图谱/记忆管理", "财务审计/核算风控", "音视频与图像生成", "工作流编排/流程调度"])
         self.combo_domain.currentTextChanged.connect(self.apply_filter)
         filter_bar.addWidget(self.combo_domain)
+
+        lbl_filter_pattern = QLabel("词型分类:")
+        lbl_filter_pattern.setStyleSheet("font-weight: bold; color: #555; margin-left: 8px;")
+        filter_bar.addWidget(lbl_filter_pattern)
+
+        self.combo_pattern = QComboBox()
+        self.combo_pattern.addItems(["全部词型", "实体名词 (Entity/Noun)", "意图动词 (Action/Verb)", "介词与引导词 (Preposition/Leading)", "CLI/工具指令 (Command/Tool)", "技术术语/专有名词 (Technical Term)"])
+        self.combo_pattern.currentTextChanged.connect(self.apply_filter)
+        filter_bar.addWidget(self.combo_pattern)
 
         lbl_filter_conflict = QLabel("冲突状态:")
         lbl_filter_conflict.setStyleSheet("font-weight: bold; color: #555; margin-left: 8px;")
@@ -186,9 +195,22 @@ class KeywordManagerPanel(QWidget):
                     "path": s_meta.get("path", "")
                 })
 
+            # 计算词型分类
+            pat_type = "实体名词"
+            lower_kw = kw.lower()
+            if any(lower_kw.startswith(p) for p in ["via", "with", "by", "for", "from", "into", "through", "based", "基于", "通过", "对于", "按照"]):
+                pat_type = "介词与引导词"
+            elif any(lower_kw.startswith(v) for v in ["create", "generate", "build", "review", "search", "write", "code", "run", "deploy", "audit", "diff", "analyze", "parse", "fetch", "extract", "check", "创建", "生成", "编写", "审查", "搜索", "分析", "审计", "比对", "提取"]):
+                pat_type = "意图动词"
+            elif any(t in lower_kw for t in ["cli", "cmd", "tool", "bash", "shell", "git", "npm", "pip", "docker", "k8s"]):
+                pat_type = "CLI/工具指令"
+            elif any(t in lower_kw for t in ["ast", "ocr", "api", "json", "yaml", "sql", "http", "jwt", "tts", "db", "sdk"]):
+                pat_type = "技术术语/专有名词"
+
             dataset.append({
                 "keyword": kw,
                 "count": count,
+                "pattern_type": pat_type,
                 "status_text": status_text,
                 "status_color": status_color,
                 "severity": conf.get("severity", "NONE") if conf else "NONE",
@@ -203,12 +225,15 @@ class KeywordManagerPanel(QWidget):
     def apply_filter(self):
         search_txt = self.search_input.text().strip().lower()
         sel_domain = self.combo_domain.currentText()
+        sel_pattern = getattr(self, 'combo_pattern', None)
+        sel_pat_text = sel_pattern.currentText() if sel_pattern else "全部词型"
         sel_conflict = self.combo_conflict.currentText()
 
         filtered = []
         for item in self.all_keywords_data:
             kw = item["keyword"].lower()
             skills = item["skills"]
+            pat_type = item.get("pattern_type", "实体名词")
 
             # 1. 冲突过滤
             if sel_conflict == "仅展示存在冲突项 (>1技能)" and item["count"] <= 1:
@@ -216,13 +241,26 @@ class KeywordManagerPanel(QWidget):
             elif sel_conflict == "唯一专属触发词 (1技能)" and item["count"] > 1:
                 continue
 
-            # 2. 领域过滤
+            # 2. 词型分类过滤
+            if sel_pat_text != "全部词型":
+                if sel_pat_text.startswith("实体名词") and pat_type != "实体名词":
+                    continue
+                elif sel_pat_text.startswith("意图动词") and pat_type != "意图动词":
+                    continue
+                elif sel_pat_text.startswith("介词与引导词") and pat_type != "介词与引导词":
+                    continue
+                elif sel_pat_text.startswith("CLI") and pat_type != "CLI/工具指令":
+                    continue
+                elif sel_pat_text.startswith("技术术语") and pat_type != "技术术语/专有名词":
+                    continue
+
+            # 3. 领域过滤
             if sel_domain != "全部领域":
                 domain_match = any(s.get("domain_label") == sel_domain for s in skills)
                 if not domain_match:
                     continue
 
-            # 3. 关键字模糊搜索
+            # 4. 关键字模糊搜索
             if search_txt:
                 match_kw = search_txt in kw
                 match_skills = any(search_txt in s.get("id", "").lower() or search_txt in s.get("name", "").lower() or search_txt in s.get("description", "").lower() for s in skills)
@@ -301,15 +339,20 @@ class KeywordManagerPanel(QWidget):
             self.table.setCellWidget(row, 4, combo)
 
     def export_for_ai(self):
-        """生成专门喂给 AI 的 Prompt 与 Markdown 路由定制字典"""
+        """生成专门喂给 AI 的 Prompt 与 Markdown 路由定制字典（支持全域或当前过滤视图导出）"""
         if not self.all_keywords_data:
             QMessageBox.information(self, "提示", "当前触发词库为空，请先重新扫描。")
             return
 
-        default_file = os.path.join(os.path.expanduser("~"), f"AI_Skill_Routing_Keywords_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md")
+        sel_domain = self.combo_domain.currentText()
+        domain_tag = f"_{sel_domain.replace('/', '_')}" if sel_domain != "全部领域" else "_All"
+        default_file = os.path.join(os.path.expanduser("~"), f"AI_Skill_Routing_Keywords{domain_tag}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md")
         save_path, _ = QFileDialog.getSaveFileName(self, "导出给 AI 的意图定制字典", default_file, "Markdown (*.md);;JSON (*.json)")
         if not save_path:
             return
+
+        # 优先使用当前经过领域/词型/冲突过滤的子集，若未做过滤则导出全量
+        export_dataset = self.filtered_keywords_data if self.filtered_keywords_data else self.all_keywords_data
 
         is_json = save_path.endswith(".json")
         try:
@@ -317,50 +360,55 @@ class KeywordManagerPanel(QWidget):
                 export_obj = {
                     "system_prompt_instruction": "你是一个智能意图路由器。根据用户的输入指令，检索以下触发词与意图定义，精准分发到对应的专属技能，避免在冲突触发词下产生歧义误判。",
                     "generated_at": datetime.now().isoformat(),
-                    "total_keywords": len(self.all_keywords_data),
-                    "keywords": self.all_keywords_data
+                    "filter_domain": sel_domain,
+                    "total_keywords": len(export_dataset),
+                    "keywords": export_dataset
                 }
                 with open(save_path, "w", encoding="utf-8") as f:
                     json.dump(export_obj, f, ensure_ascii=False, indent=2)
             else:
-                lines = [
-                    "# 🤖 AI Agent 技能意图分发与关键词路由定制表 (Skill Intent Routing Matrix)",
-                    f"> **生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | **覆盖独立触发词**: {len(self.all_keywords_data)} 个 | **总技能数**: {self.scan_result.get('total_skills', 0)} 个\n",
-                    "## 📌 AI System Instruction (系统提示词)",
-                    "```markdown",
-                    "【意图路由与技能唤醒准则】",
-                    "1. 当用户输入包含以下触发词时，请依据【默认推荐技能】与【意图描述】精准唤醒对应技能；",
-                    "2. 若遇到标注为 [🔴严重冲突] 或 [🟠跨域重叠] 的多技能共用词，请结合用户上下文语境与领域特征进行消歧，不可泛化误触发；",
-                    "3. 严禁越权调用未声明当前触发意图的无关技能。",
-                    "```\n",
-                    "## 📋 全域触发词与技能映射索引 (Keyword-to-Skill Routing Table)\n",
-                    "| 序号 | 触发关键词 (Keyword) | 冲突状态 | 关联技能数 | 推荐默认技能 | 所属领域 | 技能意图与功能描述 |",
-                    "| :---: | :--- | :---: | :---: | :--- | :---: | :--- |"
-                ]
+                domain_filter_arg = sel_domain if sel_domain != "全部领域" else None
+                # 使用后端强化后的 AI 提示词与三元组路由生成器
+                if self.scanner and hasattr(self.scanner, 'export_ai_routing_prompt'):
+                    content = self.scanner.export_ai_routing_prompt(domain_filter=domain_filter_arg)
+                    with open(save_path, "w", encoding="utf-8") as f:
+                        f.write(content)
+                else:
+                    lines = [
+                        "# 🤖 AI Agent 技能意图分发与关键词路由定制表 (Skill Intent Routing Matrix)",
+                        f"> **生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | **覆盖独立触发词**: {len(export_dataset)} 个 | **过滤领域**: {sel_domain}\n",
+                        "## 📌 AI System Instruction (系统提示词)",
+                        "```markdown",
+                        "【意图路由与技能唤醒准则】",
+                        "1. 当用户输入包含以下触发词时，请依据【默认推荐技能】与【意图描述】精准唤醒对应技能；",
+                        "2. 若遇到标注为 [🔴严重冲突] 或 [🟠跨域重叠] 的多技能共用词，请结合用户上下文语境与领域特征进行消歧，不可泛化误触发；",
+                        "3. 严禁越权调用未声明当前触发意图的无关技能。",
+                        "```\n",
+                        "## 📋 全域触发词与技能映射索引 (Keyword-to-Skill Routing Table)\n",
+                        "| 序号 | 触发关键词 (Keyword) | 词型 | 冲突状态 | 关联技能数 | 推荐默认技能 | 所属领域 | 技能意图与功能描述 |",
+                        "| :---: | :--- | :---: | :---: | :---: | :--- | :---: | :--- |"
+                    ]
 
-                for idx, item in enumerate(self.all_keywords_data):
-                    kw = item["keyword"]
-                    status = item["status_text"]
-                    count = item["count"]
-                    skills = item["skills"]
-                    p_skill = skills[0] if skills else {}
+                    for idx, item in enumerate(export_dataset):
+                        kw = item["keyword"]
+                        pat = item.get("pattern_type", "实体名词")
+                        status = item["status_text"]
+                        count = item["count"]
+                        skills = item["skills"]
+                        p_skill = skills[0] if skills else {}
 
-                    skill_names_str = f"`{p_skill.get('name', '未知')}`"
-                    if count > 1:
-                        other_names = ", ".join([s.get('name', s.get('id')) for s in skills[1:]])
-                        skill_names_str += f" *(备选: {other_names})*"
+                        skill_names_str = f"`{p_skill.get('name', '未知')}`"
+                        if count > 1:
+                            other_names = ", ".join([s.get('name', s.get('id')) for s in skills[1:]])
+                            skill_names_str += f" *(备选: {other_names})*"
 
-                    domain = p_skill.get("domain_label", "通用任务")
-                    desc = p_skill.get("description", "").replace("\n", " ").replace("|", "/")[:120]
+                        domain = p_skill.get("domain_label", "通用任务")
+                        desc = p_skill.get("description", "").replace("\n", " ").replace("|", "/")[:120]
 
-                    lines.append(f"| {idx+1} | **`{kw}`** | {status} | {count} | {skill_names_str} | {domain} | {desc} |")
+                        lines.append(f"| {idx+1} | **`{kw}`** | {pat} | {status} | {count} | {skill_names_str} | {domain} | {desc} |")
 
-                lines.append("\n## 💡 歧义词优化建议 (Disambiguation Rules)")
-                for c in self.scan_result.get("conflicts", [])[:30]:
-                    lines.append(f"- **`{c['keyword']}`** ({c['severity']}): 与 {len(c['skills'])} 个技能重叠 -> {c['suggestion']}")
-
-                with open(save_path, "w", encoding="utf-8") as f:
-                    f.write("\n".join(lines))
+                    with open(save_path, "w", encoding="utf-8") as f:
+                        f.write("\n".join(lines))
 
             QMessageBox.information(self, "导出成功", f"🎉 已成功导出 AI 技能意图定制表：\n{save_path}\n\n可直接将其复制/作为上下文喂给 AI 用于技能路由微调！")
             if self.win and hasattr(self.win, 'append_log'):

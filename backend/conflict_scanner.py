@@ -30,11 +30,15 @@ DOMAIN_KEYWORDS_MAP = {
     "workflow_automation": ("工作流编排/流程调度", ["工作流", "任务流", "sop", "自动化", "编排", "调度", "pipeline", "taskflow", "workflow", "automation"])
 }
 
-# 常见中英文停用词（排除无意图辨识度的虚词与助词）
+# 常见中英文停用词与虚词（排除无意图辨识度的通用虚词/介词/连词/弱动词/代词）
 STOP_WORDS = {
     "for", "with", "this", "that", "from", "into", "when", "then", "your", "what", "where", "which",
-    "and", "the", "are", "can", "use", "all", "each", "both", "such", "how", "has", "have", "been",
-    "用于", "支持", "实现", "负责", "以及", "通过", "进行", "可以", "帮助", "使用", "完成", "基于", "提供", "相关", "包括"
+    "and", "the", "are", "can", "use", "using", "all", "each", "both", "such", "how", "has", "have", "been",
+    "via", "about", "across", "should", "wants", "like", "will", "would", "could", "also", "some",
+    "user", "users", "needs", "need", "any", "not", "only", "well", "such", "than", "other", "into",
+    "trigger", "triggers", "triggered", "specific", "specified", "support", "supports", "supported",
+    "用于", "支持", "实现", "负责", "以及", "通过", "进行", "可以", "帮助", "使用", "完成", "基于", "提供", "相关", "包括",
+    "作为", "能够", "需要", "针对", "根据", "如果", "当前", "操作", "用户", "触发", "需求"
 }
 
 
@@ -346,3 +350,133 @@ class SkillConflictScanner:
         lines.append("3. **意图前置探测**: 为当前技能配置明确的前提激活环境与参数检测规则，避免关键词单纯匹配触发。")
 
         return "\n".join(lines)
+
+    def classify_keywords_by_pattern(self) -> Dict[str, Any]:
+        """依据介词/通用动词（via, cli, search, write, code等）对全域关键词进行分类统计"""
+        if not self.skills_db:
+            self.scan_all_skills()
+
+        pattern_groups = {
+            "via_channel": {"label": "通道与协议 (via/channel/protocol)", "pattern": r"(via|channel|proto|http|ws|smtp|imap|api)", "keywords": []},
+            "cli_terminal": {"label": "命令行与终端 (cli/cmd/exec/tool)", "pattern": r"(cli|cmd|bash|shell|terminal|exec|command|run)", "keywords": []},
+            "search_query": {"label": "检索与发现 (search/query/find/fetch)", "pattern": r"(search|query|find|fetch|lookup|explore|seek)", "keywords": []},
+            "write_doc": {"label": "生成与写作 (write/create/generate/note)", "pattern": r"(write|create|gen|author|draft|note|record|card)", "keywords": []},
+            "code_dev": {"label": "代码与开发 (code/dev/debug/review)", "pattern": r"(code|dev|debug|review|ast|lint|compile|test|build)", "keywords": []},
+            "data_analyze": {"label": "数据与分析 (data/analyze/audit/diff)", "pattern": r"(data|stat|analyze|audit|diff|reconcil|finance|calc)", "keywords": []},
+            "other_generic": {"label": "其他通用触发词", "pattern": r".*", "keywords": []}
+        }
+
+        import re
+        classified = {}
+        for kw, sids in self.keyword_index.items():
+            matched_group = "other_generic"
+            for g_key, g_info in pattern_groups.items():
+                if g_key == "other_generic":
+                    continue
+                if re.search(g_info["pattern"], kw, re.I):
+                    matched_group = g_key
+                    break
+            
+            if matched_group not in classified:
+                classified[matched_group] = []
+            classified[matched_group].append({
+                "keyword": kw,
+                "skill_count": len(sids),
+                "skills": [self.skills_db[sid]["name"] for sid in sids if sid in self.skills_db],
+                "is_conflict": len(sids) > 1
+            })
+
+        return {
+            "pattern_definitions": {k: v["label"] for k, v in pattern_groups.items()},
+            "groups": classified
+        }
+
+    def extract_skill_triplets(self) -> List[Dict[str, Any]]:
+        """按「实体名词 + 动词意图 + 领域约束」提取完整三元组，实现精准领域对齐与消歧"""
+        if not self.skills_db:
+            self.scan_all_skills()
+
+        triplets = []
+        for sid, meta in self.skills_db.items():
+            domain_label = meta["domain_label"]
+            name = meta["name"]
+            desc = meta["description"]
+            
+            # 从技能描述与触发词提炼「实体名词 (Entity) + 动词意图 (Intent) + 领域 (Domain)」
+            for kw in meta["keywords"]:
+                # 确定主导意图动词
+                intent = "执行"
+                if any(w in kw for w in ["search", "find", "query", "搜索", "查"]): intent = "检索/查询"
+                elif any(w in kw for w in ["write", "create", "draft", "记录", "写", "制卡"]): intent = "撰写/沉淀"
+                elif any(w in kw for w in ["review", "debug", "test", "测试", "审查", "排错"]): intent = "审查/调试"
+                elif any(w in kw for w in ["ocr", "extract", "parse", "抽取", "解析"]): intent = "抽取/识别"
+                elif any(w in kw for w in ["diff", "compare", "audit", "对账", "核算"]): intent = "比对/审计"
+                
+                # 确定实体对象
+                entity = kw
+                clean_name = name.replace("skill-", "").replace("-", " ")
+                
+                triplets.append({
+                    "skill_id": sid,
+                    "skill_name": name,
+                    "keyword": kw,
+                    "entity": entity,
+                    "intent": intent,
+                    "domain": domain_label,
+                    "triplet_expr": f"[{domain_label}] 针对 <{entity}> 发起 <{intent}> -> 唤醒 『{name}』",
+                    "description": desc
+                })
+
+        return triplets
+
+    def export_ai_routing_prompt(self, domain_filter: Optional[str] = None) -> str:
+        """提取特定领域或全域的精简路由子集，生成高质量 AI Agent 提示词"""
+        if not self.skills_db:
+            self.scan_all_skills()
+
+        triplets = self.extract_skill_triplets()
+        if domain_filter and domain_filter != "全部领域":
+            triplets = [t for t in triplets if t["domain"] == domain_filter]
+
+        # 按领域分组聚合
+        domain_groups = {}
+        for t in triplets:
+            dom = t["domain"]
+            if dom not in domain_groups:
+                domain_groups[dom] = {}
+            sid = t["skill_id"]
+            if sid not in domain_groups[dom]:
+                domain_groups[dom][sid] = {
+                    "name": t["skill_name"],
+                    "desc": t["description"],
+                    "keywords": set(),
+                    "triplets": []
+                }
+            domain_groups[dom][sid]["keywords"].add(t["keyword"])
+            domain_groups[dom][sid]["triplets"].append(f"<{t['entity']}> + <{t['intent']}>")
+
+        lines = [
+            "# AI Agent 意图分发与技能路由规则库 (Skill Routing Protocol)",
+            f"> 自动生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | 领域范围: {domain_filter or '全域'}",
+            "",
+            "## 1. 意图决策总则",
+            "- 当且仅当用户输入命中下述【实体 + 动词意图】三元组或触发关键词时，主动激活对应技能；",
+            "- 若用户指令存在歧义，优先根据上下文业务领域及精简三元组进行精准分流；",
+            "- 严禁跨领域误唤醒通用词重叠的同名意图技能。",
+            "",
+            "## 2. 领域技能精简路由表"
+        ]
+
+        for dom, skills_map in domain_groups.items():
+            lines.append(f"\n### 🏛️ 领域: {dom}")
+            for sid, sinfo in skills_map.items():
+                kw_str = ", ".join([f"`{k}`" for k in sorted(sinfo["keywords"])])
+                lines.append(f"\n#### ⚡ 技能: `{sinfo['name']}`")
+                lines.append(f"- **功能定义**: {sinfo['desc']}")
+                lines.append(f"- **唤醒关键词**: {kw_str}")
+                lines.append("- **精简意图三元组规则**:")
+                for tr in sorted(set(sinfo["triplets"]))[:6]:
+                    lines.append(f"  - 命中 {tr} -> 唤醒 `{sinfo['name']}`")
+
+        return "\n".join(lines)
+
