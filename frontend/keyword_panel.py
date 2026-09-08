@@ -119,20 +119,21 @@ class KeywordManagerPanel(QWidget):
         # 3. 关键词主表格
         self.table = QTableWidget()
         self.table.setColumnCount(7)
-        self.table.setHorizontalHeaderLabels(["序号", "触发词 (Keyword)", "对应技能数", "冲突等级/状态", "默认/所属技能 (下拉切换)", "技能所属领域", "技能意图描述"])
+        self.table.setHorizontalHeaderLabels(["序号", "触发规则三元组", "对应技能数", "冲突状态", "默认/所属技能 (下拉切换)", "技能领域", "技能意图描述"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
 
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.Interactive)
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(4, QHeaderView.Interactive)
         header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(6, QHeaderView.Stretch)
-        self.table.setColumnWidth(4, 260)
+        self.table.setColumnWidth(1, 260)
+        self.table.setColumnWidth(4, 250)
 
         layout.addWidget(self.table, 1)
 
@@ -207,8 +208,20 @@ class KeywordManagerPanel(QWidget):
             elif any(t in lower_kw for t in ["ast", "ocr", "api", "json", "yaml", "sql", "http", "jwt", "tts", "db", "sdk"]):
                 pat_type = "技术术语/专有名词"
 
+            # 计算意图三元组规则
+            triplet_str = f"<{kw}> + <执行>"
+            if any(k in lower_kw for k in ["search", "brave", "query", "find", "查", "搜", "web"]):
+                triplet_str = f"<{kw}> + <检索/查询>"
+            elif any(k in lower_kw for k in ["review", "audit", "check", "inspect", "审", "校验", "核"]):
+                triplet_str = f"<{kw}> + <审查/评估>"
+            elif any(k in lower_kw for k in ["write", "create", "generate", "build", "写", "创作", "生成"]):
+                triplet_str = f"<{kw}> + <撰写/创作>"
+            elif any(k in lower_kw for k in ["card", "note", "knowledge", "memory", "卡", "笔记", "知识", "记忆"]):
+                triplet_str = f"<{kw}> + <记录/沉淀>"
+
             dataset.append({
                 "keyword": kw,
+                "triplet_rule": triplet_str,
                 "count": count,
                 "pattern_type": pat_type,
                 "status_text": status_text,
@@ -283,13 +296,14 @@ class KeywordManagerPanel(QWidget):
             it_idx.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(row, 0, it_idx)
 
-            # 列1: 触发词
-            it_kw = QTableWidgetItem(item["keyword"])
-            font_kw = QFont()
-            font_kw.setBold(True)
-            it_kw.setFont(font_kw)
-            it_kw.setForeground(QColor("#005999"))
-            self.table.setItem(row, 1, it_kw)
+            # 列1: 触发规则三元组
+            it_triplet = QTableWidgetItem(item.get("triplet_rule", f"<{item['keyword']}> + <执行>"))
+            it_triplet.setForeground(QColor("#2e7d32"))
+            font_trp = QFont()
+            font_trp.setFamily("Consolas")
+            font_trp.setBold(True)
+            it_triplet.setFont(font_trp)
+            self.table.setItem(row, 1, it_triplet)
 
             # 列2: 对应技能数
             it_count = QTableWidgetItem(str(item["count"]))
