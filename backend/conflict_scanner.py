@@ -30,7 +30,7 @@ DOMAIN_KEYWORDS_MAP = {
     "workflow_automation": ("工作流编排/流程调度", ["工作流", "任务流", "sop", "自动化", "编排", "调度", "pipeline", "taskflow", "workflow", "automation"])
 }
 
-# 常见中英文停用词、虚词、纯通用动词与无歧义单字（单独出现时不具备意图辨识度）
+# 常见中英文停用词、虚词、纯通用动词、无语义缩写与高歧义抽象词（单独出现时不具备意图辨识度，必须忽略）
 STOP_WORDS = {
     "for", "with", "this", "that", "from", "into", "when", "then", "your", "what", "where", "which",
     "and", "the", "are", "can", "use", "using", "all", "each", "both", "such", "how", "has", "have", "been",
@@ -39,7 +39,11 @@ STOP_WORDS = {
     "trigger", "triggers", "triggered", "specific", "specified", "support", "supports", "supported",
     " 用于", "支持", "实现", "负责", "以及", "通过", "进行", "可以", "帮助", "使用", "完成", "基于", "提供", "相关", "包括",
     "作为", "能够", "需要", "针对", "根据", "如果", "当前", "操作", "用户", "触发", "需求", "等等", "功能", "执行",
-    "a", "an", "the", "in", "on", "at", "by", "to", "of", "or", "as", "is", "it", "if", "be"
+    "a", "an", "the", "in", "on", "at", "by", "to", "of", "or", "as", "is", "it", "if", "be",
+    # 抽象无意图词、状态词与单薄缩写（无法看出真实用途的词汇）
+    "2.1", "a11y", "aa", "aaa", "page", "target", "size", "handoff", "1.0.0", "v1", "v2", "v3",
+    "reviewing", "consequences", "choosing", "between", "evaluate", "requirements", "guidelines",
+    "standards", "various", "general", "common", "custom", "advanced", "basic", "simple", "complex"
 }
 
 # 单独出现时必须忽略的纯动词与CLI工具名（必须与实体名词组合成动宾短语或三元组才允许触发）
@@ -223,14 +227,20 @@ class SkillConflictScanner:
                 if dkw in text.lower() and dkw not in STOP_WORDS and dkw not in ISOLATED_VERBS_AND_CLI:
                     tokens.add(dkw)
 
-        # 最终严格过滤单独的动词与CLI指令
+        # 最终严格过滤单独动词、无语义纯数字版本号、无实体缩写
         valid_tokens = []
         for t in tokens:
-            t_norm = t.strip().lower()
+            t_norm = t.strip().lower().rstrip(".")
             if not t_norm or t_norm in STOP_WORDS or t_norm in ISOLATED_VERBS_AND_CLI:
                 continue
+            # 排除纯数字、纯版本号（如 2.1, 1.0.0, 3.5）
+            if re.match(r"^\d+(\.\d+)*$", t_norm):
+                continue
+            # 排除无中文且长度<=2的单薄缩写（如 aa, v2）
+            if len(t_norm) <= 2 and not any("\u4e00" <= c <= "\u9fff" for c in t_norm):
+                continue
             # 单字中文过滤
-            if len(t_norm) == 1 and '\u4e00' <= t_norm <= '\u9fff':
+            if len(t_norm) == 1 and "\u4e00" <= t_norm <= "\u9fff":
                 continue
             valid_tokens.append(t_norm)
 
