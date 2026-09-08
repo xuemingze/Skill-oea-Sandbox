@@ -200,21 +200,22 @@ class SkillConflictScanner:
                     tokens.add(f"{verb} {noun}")
                     tokens.add(noun)
 
-        # 中文动宾复合模式: (用于/支持/实现)? (动词) + (名词)
-        zh_patterns = [
-            r"用于([\u4e00-\u9fa5]{2,6})",
-            r"支持([\u4e00-\u9fa5]{2,6})",
-            r"实现([\u4e00-\u9fa5]{2,6})",
-            r"([撰写|生成|创建|输出|编写])([\u4e00-\u9fa5]{2,6})",
-            r"([审查|审计|对账|排错|测试])([\u4e00-\u9fa5]{2,6})",
-            r"([查询|检索|搜索|获取])([\u4e00-\u9fa5]{2,6})",
-            r"([管理|同步|沉淀|记录])([\u4e00-\u9fa5]{2,6})"
-        ]
-        for pat in zh_patterns:
-            for m in re.finditer(pat, text):
-                val = m.group(len(m.groups())).strip()
-                if len(val) >= 2 and val not in STOP_WORDS and val not in ISOLATED_VERBS_AND_CLI:
-                    tokens.add(val)
+        # 2. 中文短语结构化分词与实体抽取（按标点子句精准提取，杜绝断句截断）
+        zh_clauses = re.split(r'[,，、。；;：:\s/（）\(\)\[\]\【\】\<\>«»""\'\']+', text)
+        for clause in zh_clauses:
+            clause = clause.strip()
+            if not clause or len(clause) < 2 or len(clause) > 16:
+                continue
+            # 过滤包含虚词的整句
+            if any(clause.startswith(sw) for sw in ["用于", "支持", "实现", "基于", "通过", "适用于", "负责", "覆盖"]):
+                for pfx in ["用于", "支持", "实现", "基于", "通过", "适用于", "负责", "覆盖"]:
+                    if clause.startswith(pfx):
+                        clause = clause[len(pfx):].strip()
+                        break
+            if len(clause) >= 2 and clause not in STOP_WORDS and clause not in ISOLATED_VERBS_AND_CLI:
+                # 排除明显断句残缺词
+                if not re.search(r'^(与|按|及|或|的|把|被|从|向|在|当|到|去|由)', clause):
+                    tokens.add(clause)
 
         # 3. 匹配领域特征专有实体词（如 invoice, ast, memory, stock, ffmpeg, 12306 等）
         for _, (_, domain_kws) in DOMAIN_KEYWORDS_MAP.items():
@@ -450,17 +451,35 @@ class SkillConflictScanner:
             for kw in meta["keywords"]:
                 # 判定动词意图与对应实体名词（例: write a book -> entity: book, intent: write / 撰写）
                 parts = kw.split()
+                entity = kw
+                intent = "执行/调用"
+
                 if len(parts) >= 2:
                     first_w = parts[0].lower()
                     rest_entity = " ".join(parts[1:])
-                    if first_w in ["write", "create", "draft", "author", "撰写", "编写", "写"]:
+                    if first_w in ["write", "draft", "author", "撰写", "编写", "写"]:
                         intent = "撰写/创作"
                         entity = rest_entity
-                    elif first_w in ["search", "query", "find", "fetch", "lookup", "查询", "检索", "查"]:
+                    elif first_w in ["create", "generate", "build", "make", "创建", "生成", "构建"]:
+                        intent = "创建/生成"
+                        entity = rest_entity
+                    elif first_w in ["search", "query", "find", "fetch", "lookup", "查询", "检索", "查", "获取"]:
                         intent = "检索/查询"
                         entity = rest_entity
-                    elif first_w in ["review", "audit", "check", "test", "inspect", "审查", "调试", "测试"]:
+                    elif first_w in ["review", "audit", "check", "inspect", "审查", "审计", "检查", "验收"]:
                         intent = "审查/评估"
+                        entity = rest_entity
+                    elif first_w in ["debug", "diagnose", "fix", "troubleshoot", "排错", "调试", "诊断", "修复"]:
+                        intent = "排错/调试"
+                        entity = rest_entity
+                    elif first_w in ["test", "verify", "benchmark", "测试", "验证", "压测", "跑测"]:
+                        intent = "测试/验证"
+                        entity = rest_entity
+                    elif first_w in ["deploy", "publish", "release", "部署", "发布", "上线"]:
+                        intent = "部署/发布"
+                        entity = rest_entity
+                    elif first_w in ["convert", "format", "transform", "转换", "格式化", "导出"]:
+                        intent = "格式转换"
                         entity = rest_entity
                     elif first_w in ["ocr", "extract", "parse", "抽取", "解析", "识别"]:
                         intent = "抽取/识别"
@@ -468,23 +487,56 @@ class SkillConflictScanner:
                     elif first_w in ["diff", "compare", "reconcile", "比对", "核对", "对账"]:
                         intent = "比对/核算"
                         entity = rest_entity
+                    elif first_w in ["manage", "track", "sync", "record", "管理", "记录", "沉淀", "同步"]:
+                        intent = "管理/沉淀"
+                        entity = rest_entity
                     else:
-                        intent = "执行"
                         entity = kw
                 else:
-                    entity = kw
-                    intent = "执行"
-                    # 根据领域和技能名推断意图
-                    if "writer" in name or "journal" in name or "note" in name:
-                        intent = "撰写/沉淀"
-                    elif "search" in name or "query" in name or "explorer" in name:
+                    # 单词或短语智能推导动作细粒度：优先按技能本身定位与领域推导，再按关键词自身特征细化
+                    kw_lower = kw.lower()
+                    name_lower = name.lower()
+                    desc_lower = desc.lower()
+
+                    # 1. 优先从关键词或技能名称匹配具体操作意图
+                    if any(k in kw_lower or k in name_lower for k in ["search", "query", "fetch", "explorer", "find", "12306", "stock", "查询", "检索", "行情", "公告", "票"]):
                         intent = "检索/查询"
-                    elif "review" in name or "audit" in name or "testing" in name or "debug" in name:
-                        intent = "审查/调试"
-                    elif "ocr" in name:
+                    elif any(k in kw_lower or k in name_lower for k in ["review", "audit", "critique", "审查", "审计", "评审"]):
+                        intent = "审查/评估"
+                    elif any(k in kw_lower or k in name_lower for k in ["debug", "fix", "issue", "troubleshoot", "排错", "诊断", "调试", "修复"]):
+                        intent = "排错/调试"
+                    elif any(k in kw_lower or k in name_lower for k in ["test", "testing", "pytest", "check", "测试", "用例", "验证", "压测"]):
+                        intent = "测试/验证"
+                    elif any(k in kw_lower or k in name_lower for k in ["write", "draft", "writer", "article", "doc", "文案", "报告", "文章", "撰写", "编写"]):
+                        intent = "撰写/创作"
+                    elif any(k in kw_lower or k in name_lower for k in ["gen", "create", "build", "maker", "builder", "dev", "expert", "生成", "构建", "开发", "设计"]):
+                        intent = "创建/生成"
+                    elif any(k in kw_lower or k in name_lower for k in ["deploy", "release", "ci", "cd", "发布", "部署", "上线"]):
+                        intent = "部署/发布"
+                    elif any(k in kw_lower or k in name_lower for k in ["pdf", "docx", "pptx", "xlsx", "convert", "格式", "转换", "导出"]):
+                        intent = "格式转换/导出"
+                    elif any(k in kw_lower or k in name_lower for k in ["ocr", "extract", "parse", "发票", "票据", "识别", "抽取"]):
                         intent = "抽取/识别"
-                    elif "analyzer" in name or "analysis" in name:
+                    elif any(k in kw_lower or k in name_lower for k in ["diff", "reconcile", "variance", "对账", "核对", "比对"]):
+                        intent = "比对/核算"
+                    elif any(k in kw_lower or k in name_lower for k in ["memory", "knowledge", "note", "journal", "keeper", "知识", "日记", "记忆", "看板"]):
+                        intent = "管理/沉淀"
+                    elif any(k in kw_lower or k in name_lower for k in ["analyzer", "analysis", "explore", "分析", "报表", "统计", "指标"]):
                         intent = "深度分析"
+                    else:
+                        # 2. 从技能描述中的动词意图继承
+                        if any(k in desc_lower for k in ["查询", "检索", "search", "query"]):
+                            intent = "检索/查询"
+                        elif any(k in desc_lower for k in ["审查", "评估", "review"]):
+                            intent = "审查/评估"
+                        elif any(k in desc_lower for k in ["分析", "统计", "analyze"]):
+                            intent = "深度分析"
+                        elif any(k in desc_lower for k in ["撰写", "生成", "write", "create"]):
+                            intent = "撰写/生成"
+                        elif any(k in desc_lower for k in ["测试", "调试", "test", "debug"]):
+                            intent = "测试/调试"
+                        else:
+                            intent = "执行/调度"
 
                 triplets.append({
                     "skill_id": sid,
