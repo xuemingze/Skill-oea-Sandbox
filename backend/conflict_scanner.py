@@ -30,15 +30,25 @@ DOMAIN_KEYWORDS_MAP = {
     "workflow_automation": ("工作流编排/流程调度", ["工作流", "任务流", "sop", "自动化", "编排", "调度", "pipeline", "taskflow", "workflow", "automation"])
 }
 
-# 常见中英文停用词与虚词（排除无意图辨识度的通用虚词/介词/连词/弱动词/代词）
+# 常见中英文停用词、虚词、纯通用动词与无歧义单字（单独出现时不具备意图辨识度）
 STOP_WORDS = {
     "for", "with", "this", "that", "from", "into", "when", "then", "your", "what", "where", "which",
     "and", "the", "are", "can", "use", "using", "all", "each", "both", "such", "how", "has", "have", "been",
     "via", "about", "across", "should", "wants", "like", "will", "would", "could", "also", "some",
     "user", "users", "needs", "need", "any", "not", "only", "well", "such", "than", "other", "into",
     "trigger", "triggers", "triggered", "specific", "specified", "support", "supports", "supported",
-    "用于", "支持", "实现", "负责", "以及", "通过", "进行", "可以", "帮助", "使用", "完成", "基于", "提供", "相关", "包括",
-    "作为", "能够", "需要", "针对", "根据", "如果", "当前", "操作", "用户", "触发", "需求"
+    " 用于", "支持", "实现", "负责", "以及", "通过", "进行", "可以", "帮助", "使用", "完成", "基于", "提供", "相关", "包括",
+    "作为", "能够", "需要", "针对", "根据", "如果", "当前", "操作", "用户", "触发", "需求", "等等", "功能", "执行",
+    "a", "an", "the", "in", "on", "at", "by", "to", "of", "or", "as", "is", "it", "if", "be"
+}
+
+# 单独出现时必须忽略的纯动词与CLI工具名（必须与实体名词组合成动宾短语或三元组才允许触发）
+ISOLATED_VERBS_AND_CLI = {
+    "write", "create", "generate", "make", "build", "run", "exec", "execute", "start", "stop",
+    "search", "find", "query", "lookup", "fetch", "get", "check", "test", "audit", "review",
+    "edit", "update", "modify", "change", "delete", "remove", "clean", "drop", "save",
+    "cli", "cmd", "command", "tool", "tools", "script", "app", "service", "task", "process",
+    "写", "查", "做", "建", "改", "删", "跑", "读", "看", "调", "测", "审", "测", "导", "发"
 }
 
 
@@ -161,35 +171,69 @@ class SkillConflictScanner:
             return None
 
     def _extract_trigger_keywords(self, name: str, description: str, content: str) -> List[str]:
-        """从技能名称、描述与文本中提取触发词"""
+        """从技能名称、描述与文本中提取触发词（强化实体+意图名词短语，过滤单独的纯动词与CLI指令）"""
         tokens = set()
-        # 从技能名提取
-        for part in re.split(r"[-_.\s]+", name):
-            if len(part) >= 2 and part.lower() not in STOP_WORDS:
+        clean_name = name.lower().replace("skill-", "").replace("-skill", "")
+
+        # 1. 从技能名提取复合短语（若包含连接符则优先提取完整词组）
+        if "-" in clean_name or "_" in clean_name:
+            tokens.add(clean_name.replace("-", " ").replace("_", " "))
+        for part in re.split(r"[-_.\s]+", clean_name):
+            if len(part) >= 2 and part.lower() not in STOP_WORDS and part.lower() not in ISOLATED_VERBS_AND_CLI:
                 tokens.add(part.lower())
 
-        # 从描述中提取动宾短语或高频术语
+        # 2. 从描述中提取动宾短语（动词 + 意向名词，如 write article / review code / search stock / 记录知识卡）
         text = f"{name} {description}"
-        patterns = [
-            r"用于([\u4e00-\u9fa5a-zA-Z0-9_\-]{2,8})",
-            r"支持([\u4e00-\u9fa5a-zA-Z0-9_\-]{2,8})",
-            r"实现([\u4e00-\u9fa5a-zA-Z0-9_\-]{2,8})",
-            r"([a-zA-Z0-9_\-]{2,15}\s*(?:pipeline|workflow|tool|manager|generator|analyzer|review|debugger))",
-            r"([A-Za-z0-9_\-]{3,})"
+        
+        # 英文动宾复合模式: (verb) (adj/det)? (noun)
+        en_vp_patterns = [
+            r"\b(write|create|generate|draft|author)\s+(?:a\s+|an\s+|the\s+)?([a-zA-Z0-9_\-]+)\b",
+            r"\b(review|audit|check|test|inspect)\s+(?:the\s+)?([a-zA-Z0-9_\-]+)\b",
+            r"\b(search|query|find|lookup|fetch)\s+(?:the\s+)?([a-zA-Z0-9_\-]+)\b",
+            r"\b(manage|track|sync|monitor|export)\s+(?:the\s+)?([a-zA-Z0-9_\-]+)\b"
         ]
-        for pat in patterns:
-            for m in re.finditer(pat, text, re.IGNORECASE):
-                val = m.group(1).strip().lower()
-                if len(val) >= 2 and not val.isdigit() and val not in STOP_WORDS:
+        for pat in en_vp_patterns:
+            for m in re.finditer(pat, text, re.I):
+                verb = m.group(1).lower()
+                noun = m.group(2).lower()
+                if noun not in STOP_WORDS and noun not in ISOLATED_VERBS_AND_CLI and len(noun) >= 2:
+                    tokens.add(f"{verb} {noun}")
+                    tokens.add(noun)
+
+        # 中文动宾复合模式: (用于/支持/实现)? (动词) + (名词)
+        zh_patterns = [
+            r"用于([\u4e00-\u9fa5]{2,6})",
+            r"支持([\u4e00-\u9fa5]{2,6})",
+            r"实现([\u4e00-\u9fa5]{2,6})",
+            r"([撰写|生成|创建|输出|编写])([\u4e00-\u9fa5]{2,6})",
+            r"([审查|审计|对账|排错|测试])([\u4e00-\u9fa5]{2,6})",
+            r"([查询|检索|搜索|获取])([\u4e00-\u9fa5]{2,6})",
+            r"([管理|同步|沉淀|记录])([\u4e00-\u9fa5]{2,6})"
+        ]
+        for pat in zh_patterns:
+            for m in re.finditer(pat, text):
+                val = m.group(len(m.groups())).strip()
+                if len(val) >= 2 and val not in STOP_WORDS and val not in ISOLATED_VERBS_AND_CLI:
                     tokens.add(val)
 
-        # 匹配领域特征词
+        # 3. 匹配领域特征专有实体词（如 invoice, ast, memory, stock, ffmpeg, 12306 等）
         for _, (_, domain_kws) in DOMAIN_KEYWORDS_MAP.items():
             for dkw in domain_kws:
-                if dkw in text.lower() and dkw not in STOP_WORDS:
+                if dkw in text.lower() and dkw not in STOP_WORDS and dkw not in ISOLATED_VERBS_AND_CLI:
                     tokens.add(dkw)
 
-        return list(tokens)[:10]
+        # 最终严格过滤单独的动词与CLI指令
+        valid_tokens = []
+        for t in tokens:
+            t_norm = t.strip().lower()
+            if not t_norm or t_norm in STOP_WORDS or t_norm in ISOLATED_VERBS_AND_CLI:
+                continue
+            # 单字中文过滤
+            if len(t_norm) == 1 and '\u4e00' <= t_norm <= '\u9fff':
+                continue
+            valid_tokens.append(t_norm)
+
+        return valid_tokens[:12]
 
     def _classify_domain(self, name: str, description: str, content: str, keywords: List[str]) -> Tuple[str, str]:
         """分类技能所属领域"""
@@ -392,7 +436,7 @@ class SkillConflictScanner:
         }
 
     def extract_skill_triplets(self) -> List[Dict[str, Any]]:
-        """按「实体名词 + 动词意图 + 领域约束」提取完整三元组，实现精准领域对齐与消歧"""
+        """按「实体名词 + 动词意图 + 领域约束」提取完整三元组，实现精准领域对齐与消歧（杜绝单独动词/CLI的泛化误唤醒）"""
         if not self.skills_db:
             self.scan_all_skills()
 
@@ -404,18 +448,44 @@ class SkillConflictScanner:
             
             # 从技能描述与触发词提炼「实体名词 (Entity) + 动词意图 (Intent) + 领域 (Domain)」
             for kw in meta["keywords"]:
-                # 确定主导意图动词
-                intent = "执行"
-                if any(w in kw for w in ["search", "find", "query", "搜索", "查"]): intent = "检索/查询"
-                elif any(w in kw for w in ["write", "create", "draft", "记录", "写", "制卡"]): intent = "撰写/沉淀"
-                elif any(w in kw for w in ["review", "debug", "test", "测试", "审查", "排错"]): intent = "审查/调试"
-                elif any(w in kw for w in ["ocr", "extract", "parse", "抽取", "解析"]): intent = "抽取/识别"
-                elif any(w in kw for w in ["diff", "compare", "audit", "对账", "核算"]): intent = "比对/审计"
-                
-                # 确定实体对象
-                entity = kw
-                clean_name = name.replace("skill-", "").replace("-", " ")
-                
+                # 判定动词意图与对应实体名词（例: write a book -> entity: book, intent: write / 撰写）
+                parts = kw.split()
+                if len(parts) >= 2:
+                    first_w = parts[0].lower()
+                    rest_entity = " ".join(parts[1:])
+                    if first_w in ["write", "create", "draft", "author", "撰写", "编写", "写"]:
+                        intent = "撰写/创作"
+                        entity = rest_entity
+                    elif first_w in ["search", "query", "find", "fetch", "lookup", "查询", "检索", "查"]:
+                        intent = "检索/查询"
+                        entity = rest_entity
+                    elif first_w in ["review", "audit", "check", "test", "inspect", "审查", "调试", "测试"]:
+                        intent = "审查/评估"
+                        entity = rest_entity
+                    elif first_w in ["ocr", "extract", "parse", "抽取", "解析", "识别"]:
+                        intent = "抽取/识别"
+                        entity = rest_entity
+                    elif first_w in ["diff", "compare", "reconcile", "比对", "核对", "对账"]:
+                        intent = "比对/核算"
+                        entity = rest_entity
+                    else:
+                        intent = "执行"
+                        entity = kw
+                else:
+                    entity = kw
+                    intent = "执行"
+                    # 根据领域和技能名推断意图
+                    if "writer" in name or "journal" in name or "note" in name:
+                        intent = "撰写/沉淀"
+                    elif "search" in name or "query" in name or "explorer" in name:
+                        intent = "检索/查询"
+                    elif "review" in name or "audit" in name or "testing" in name or "debug" in name:
+                        intent = "审查/调试"
+                    elif "ocr" in name:
+                        intent = "抽取/识别"
+                    elif "analyzer" in name or "analysis" in name:
+                        intent = "深度分析"
+
                 triplets.append({
                     "skill_id": sid,
                     "skill_name": name,
